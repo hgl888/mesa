@@ -98,10 +98,10 @@ void
 blorp_blit(struct blorp_batch *batch,
            const struct blorp_surf *src_surf,
            unsigned src_level, unsigned src_layer,
-           enum isl_format src_format, int src_swizzle,
+           enum isl_format src_format, struct isl_swizzle src_swizzle,
            const struct blorp_surf *dst_surf,
            unsigned dst_level, unsigned dst_layer,
-           enum isl_format dst_format,
+           enum isl_format dst_format, struct isl_swizzle dst_swizzle,
            float src_x0, float src_y0,
            float src_x1, float src_y1,
            float dst_x0, float dst_y0,
@@ -109,18 +109,29 @@ blorp_blit(struct blorp_batch *batch,
            uint32_t filter, bool mirror_x, bool mirror_y);
 
 void
+blorp_copy(struct blorp_batch *batch,
+           const struct blorp_surf *src_surf,
+           unsigned src_level, unsigned src_layer,
+           const struct blorp_surf *dst_surf,
+           unsigned dst_level, unsigned dst_layer,
+           uint32_t src_x, uint32_t src_y,
+           uint32_t dst_x, uint32_t dst_y,
+           uint32_t src_width, uint32_t src_height);
+
+void
 blorp_fast_clear(struct blorp_batch *batch,
-                 const struct blorp_surf *surf,
-                 uint32_t level, uint32_t layer, enum isl_format format,
+                 const struct blorp_surf *surf, enum isl_format format,
+                 uint32_t level, uint32_t start_layer, uint32_t num_layers,
                  uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
 
 void
 blorp_clear(struct blorp_batch *batch,
             const struct blorp_surf *surf,
-            uint32_t level, uint32_t layer,
+            enum isl_format format, struct isl_swizzle swizzle,
+            uint32_t level, uint32_t start_layer, uint32_t num_layers,
             uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
-            enum isl_format format, union isl_color_value clear_color,
-            bool color_write_disable[4]);
+            union isl_color_value clear_color,
+            const bool color_write_disable[4]);
 
 void
 blorp_ccs_resolve(struct blorp_batch *batch,

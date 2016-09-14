@@ -30,7 +30,6 @@
 #include <string.h>
 #include <signal.h>
 #include <errno.h>
-#include <error.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -92,18 +91,14 @@ print_dword_val(struct gen_field_iterator *iter, uint64_t offset,
                 int *dword_num)
 {
    struct gen_field *f;
-   union {
-      uint32_t dw;
-      float f;
-   } v;
 
    f = iter->group->fields[iter->i - 1];
-   v.dw = iter->p[f->start / 32];
+   const int dword = f->start / 32;
 
-   if (*dword_num != (f->start / 32)) {
+   if (*dword_num != dword) {
       printf("0x%08lx:  0x%08x : Dword %d\n",
-             offset + 4 * (f->start / 32), v.dw, f->start / 32);
-      *dword_num = (f->start / 32);
+             offset + 4 * dword,  iter->p[dword], dword);
+      *dword_num = dword;
    }
 }
 
@@ -308,7 +303,7 @@ handle_media_interface_descriptor_load(struct gen_spec *spec, uint32_t *p)
       }
 
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
 
       dump_samplers(spec, descriptors[3] & ~0x1f);
       dump_binding_table(spec, descriptors[4] & ~0x1f);
@@ -406,7 +401,7 @@ handle_3dstate_vs(struct gen_spec *spec, uint32_t *p)
              instruction_base, start);
 
       insns = (struct brw_instruction *) (gtt + instruction_base + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 }
 
@@ -430,7 +425,7 @@ handle_3dstate_hs(struct gen_spec *spec, uint32_t *p)
              instruction_base, start);
 
       insns = (struct brw_instruction *) (gtt + instruction_base + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 }
 
@@ -524,21 +519,21 @@ handle_3dstate_ps(struct gen_spec *spec, uint32_t *p)
    printf("  Kernel[0] %s\n", k0);
    if (k0 != unused) {
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 
    start = instruction_base + (p[k1_offset] & mask);
    printf("  Kernel[1] %s\n", k1);
    if (k1 != unused) {
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 
    start = instruction_base + (p[k2_offset] & mask);
    printf("  Kernel[2] %s\n", k2);
    if (k2 != unused) {
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 }
 
@@ -794,8 +789,10 @@ handle_trace_block(struct gen_spec *spec, uint32_t *p)
    case AUB_TRACE_OP_DATA_WRITE:
       if (address_space != AUB_TRACE_MEMTYPE_GTT)
          break;
-      if (gtt_size < offset + size)
-         error(EXIT_FAILURE, errno, "overflow gtt space");
+      if (gtt_size < offset + size) {
+         fprintf(stderr, "overflow gtt space: %s", strerror(errno));
+         exit(EXIT_FAILURE);
+      }
       memcpy((char *) gtt + offset, data, size);
       if (gtt_end < offset + size)
          gtt_end = offset + size;
@@ -834,16 +831,22 @@ aub_file_open(const char *filename)
    file = malloc(sizeof *file);
    file->filename = strdup(filename);
    file->fd = open(file->filename, O_RDONLY);
-   if (file->fd == -1)
-      error(EXIT_FAILURE, errno, "open %s failed", file->filename);
+   if (file->fd == -1) {
+      fprintf(stderr, "open %s failed: %s", file->filename, strerror(errno));
+      exit(EXIT_FAILURE);
+   }
 
-   if (fstat(file->fd, &file->sb) == -1)
-      error(EXIT_FAILURE, errno, "stat failed");
+   if (fstat(file->fd, &file->sb) == -1) {
+      fprintf(stderr, "stat failed: %s", strerror(errno));
+      exit(EXIT_FAILURE);
+   }
 
    file->map = mmap(NULL, file->sb.st_size,
                     PROT_READ, MAP_SHARED, file->fd, 0);
-   if (file->map == MAP_FAILED)
-      error(EXIT_FAILURE, errno, "mmap failed");
+   if (file->map == MAP_FAILED) {
+      fprintf(stderr, "mmap failed: %s", strerror(errno));
+      exit(EXIT_FAILURE);
+   }
 
    file->cursor = file->map;
    file->end = file->map + file->sb.st_size / 4;
@@ -852,8 +855,10 @@ aub_file_open(const char *filename)
    gtt_size = 1ul << 40;
    gtt = mmap(NULL, gtt_size, PROT_READ | PROT_WRITE,
               MAP_PRIVATE | MAP_ANONYMOUS |  MAP_NORESERVE, -1, 0);
-   if (gtt == MAP_FAILED)
-      error(EXIT_FAILURE, errno, "failed to alloc gtt space");
+   if (gtt == MAP_FAILED) {
+      fprintf(stderr, "failed to alloc gtt space: %s", strerror(errno));
+      exit(1);
+   }
 
    return file;
 }
@@ -1002,7 +1007,7 @@ setup_pager(void)
 }
 
 static void
-print_help(FILE *file)
+print_help(const char *progname, FILE *file)
 {
    fprintf(file,
            "Usage: %s [OPTION]... FILE\n"
@@ -1015,7 +1020,7 @@ print_help(FILE *file)
            "                        if omitted), 'always', or 'never'\n"
            "      --no-pager      don't launch pager\n"
            "      --no-offsets    don't print instruction offsets\n",
-           basename(program_invocation_name));
+           progname);
 }
 
 static bool
@@ -1046,7 +1051,7 @@ int main(int argc, char *argv[])
    char gen_file[256], gen_val[24];
 
    if (argc == 1) {
-      print_help(stderr);
+      print_help(argv[0], stderr);
       exit(EXIT_FAILURE);
    }
 
@@ -1056,8 +1061,10 @@ int main(int argc, char *argv[])
       } else if (strcmp(argv[i], "--no-offsets") == 0) {
          option_print_offsets = false;
       } else if (is_prefix(argv[i], "--gen", &value)) {
-         if (value == NULL)
-            error(EXIT_FAILURE, 0, "option '--gen' requires an argument\n");
+         if (value == NULL) {
+            fprintf(stderr, "option '--gen' requires an argument\n");
+            exit(EXIT_FAILURE);
+         }
          found_arg_gen = true;
          gen_major = 0;
          gen_minor = 0;
@@ -1071,10 +1078,12 @@ int main(int argc, char *argv[])
             option_color = COLOR_NEVER;
          else if (strcmp(value, "auto") == 0)
             option_color = COLOR_AUTO;
-         else
-            error(EXIT_FAILURE, 0, "invalid value for --color: %s", value);
+         else {
+            fprintf(stderr, "invalid value for --color: %s", value);
+            exit(EXIT_FAILURE);
+         }
       } else if (strcmp(argv[i], "--help") == 0) {
-         print_help(stdout);
+         print_help(argv[0], stdout);
          exit(EXIT_SUCCESS);
       } else {
          if (argv[i][0] == '-') {
@@ -1131,8 +1140,9 @@ int main(int argc, char *argv[])
       gen_major = 9;
       gen_minor = 0;
    } else {
-      error(EXIT_FAILURE, 0, "can't parse gen: %s, expected ivb, byt, hsw, "
+      fprintf(stderr, "can't parse gen: %s, expected ivb, byt, hsw, "
                              "bdw, chv, skl, kbl or bxt\n", gen_val);
+      exit(EXIT_FAILURE);
    }
 
    /* Do this before we redirect stdout to pager. */
@@ -1153,7 +1163,7 @@ int main(int argc, char *argv[])
    disasm = gen_disasm_create(pci_id);
 
    if (argv[i] == NULL) {
-       print_help(stderr);
+       print_help(argv[0], stderr);
        exit(EXIT_FAILURE);
    } else {
        file = aub_file_open(argv[i]);

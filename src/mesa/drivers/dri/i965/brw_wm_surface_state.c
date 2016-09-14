@@ -54,6 +54,11 @@
 #include "brw_defines.h"
 #include "brw_wm.h"
 
+enum {
+   INTEL_RENDERBUFFER_LAYERED = 1 << 0,
+   INTEL_AUX_BUFFER_DISABLED = 1 << 1,
+};
+
 struct surface_state_info {
    unsigned num_dwords;
    unsigned ss_align; /* Required alignment of RENDER_SURFACE_STATE in bytes */
@@ -74,7 +79,7 @@ static const struct surface_state_info surface_state_infos[] = {
 
 static void
 brw_emit_surface_state(struct brw_context *brw,
-                       struct intel_mipmap_tree *mt,
+                       struct intel_mipmap_tree *mt, uint32_t flags,
                        GLenum target, struct isl_view view,
                        uint32_t mocs, uint32_t *surf_offset, int surf_index,
                        unsigned read_domains, unsigned write_domains)
@@ -135,9 +140,7 @@ brw_emit_surface_state(struct brw_context *brw,
    struct isl_surf *aux_surf = NULL, aux_surf_s;
    uint64_t aux_offset = 0;
    enum isl_aux_usage aux_usage = ISL_AUX_USAGE_NONE;
-   if (mt->mcs_mt &&
-       ((view.usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) ||
-        mt->fast_clear_state != INTEL_FAST_CLEAR_STATE_RESOLVED)) {
+   if (mt->mcs_mt && !(flags & INTEL_AUX_BUFFER_DISABLED)) {
       intel_miptree_get_aux_isl_surf(brw, mt, &aux_surf_s, &aux_usage);
       aux_surf = &aux_surf_s;
       assert(mt->mcs_mt->offset == 0);
@@ -183,12 +186,16 @@ brw_emit_surface_state(struct brw_context *brw,
 uint32_t
 brw_update_renderbuffer_surface(struct brw_context *brw,
                                 struct gl_renderbuffer *rb,
-                                bool layered, unsigned unit /* unused */,
+                                uint32_t flags, unsigned unit /* unused */,
                                 uint32_t surf_index)
 {
    struct gl_context *ctx = &brw->ctx;
    struct intel_renderbuffer *irb = intel_renderbuffer(rb);
    struct intel_mipmap_tree *mt = irb->mt;
+
+   if (brw->gen < 9) {
+      assert(!(flags & INTEL_AUX_BUFFER_DISABLED));
+   }
 
    assert(brw_render_target_supported(brw, rb));
    intel_miptree_used_for_rendering(mt);
@@ -210,17 +217,12 @@ brw_update_renderbuffer_surface(struct brw_context *brw,
       .levels = 1,
       .base_array_layer = irb->mt_layer / layer_multiplier,
       .array_len = MAX2(irb->layer_count, 1),
-      .channel_select = {
-         ISL_CHANNEL_SELECT_RED,
-         ISL_CHANNEL_SELECT_GREEN,
-         ISL_CHANNEL_SELECT_BLUE,
-         ISL_CHANNEL_SELECT_ALPHA,
-      },
+      .swizzle = ISL_SWIZZLE_IDENTITY,
       .usage = ISL_SURF_USAGE_RENDER_TARGET_BIT,
    };
 
    uint32_t offset;
-   brw_emit_surface_state(brw, mt, mt->target, view,
+   brw_emit_surface_state(brw, mt, flags, mt->target, view,
                           surface_state_infos[brw->gen].rb_mocs,
                           &offset, surf_index,
                           I915_GEM_DOMAIN_RENDER,
@@ -416,6 +418,90 @@ swizzle_to_scs(GLenum swizzle, bool need_green_to_blue)
    return (need_green_to_blue && scs == HSW_SCS_GREEN) ? HSW_SCS_BLUE : scs;
 }
 
+static unsigned
+brw_find_matching_rb(const struct gl_framebuffer *fb,
+                     const struct intel_mipmap_tree *mt)
+{
+   for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
+      const struct intel_renderbuffer *irb =
+         intel_renderbuffer(fb->_ColorDrawBuffers[i]);
+
+      if (irb && irb->mt == mt)
+         return i;
+   }
+
+   return fb->_NumColorDrawBuffers;
+}
+
+static inline bool
+brw_texture_view_sane(const struct brw_context *brw,
+                      const struct intel_mipmap_tree *mt, unsigned format)
+{
+   /* There are special cases only for lossless compression. */
+   if (!intel_miptree_is_lossless_compressed(brw, mt))
+      return true;
+
+   if (isl_format_supports_lossless_compression(brw->intelScreen->devinfo,
+                                                format))
+      return true;
+
+   /* Logic elsewhere needs to take care to resolve the color buffer prior
+    * to sampling it as non-compressed.
+    */
+   if (mt->fast_clear_state != INTEL_FAST_CLEAR_STATE_RESOLVED)
+      return false;
+
+   const struct gl_framebuffer *fb = brw->ctx.DrawBuffer;
+   const unsigned rb_index = brw_find_matching_rb(fb, mt);
+
+   if (rb_index == fb->_NumColorDrawBuffers)
+      return true;
+
+   /* Underlying surface is compressed but it is sampled using a format that
+    * the sampling engine doesn't support as compressed. Compression must be
+    * disabled for both sampling engine and data port in case the same surface
+    * is used also as render target.
+    */
+   return brw->draw_aux_buffer_disabled[rb_index];
+}
+
+static bool
+brw_disable_aux_surface(const struct brw_context *brw,
+                        const struct intel_mipmap_tree *mt)
+{
+   /* Nothing to disable. */
+   if (!mt->mcs_mt)
+      return false;
+
+   /* There are special cases only for lossless compression. */
+   if (!intel_miptree_is_lossless_compressed(brw, mt))
+      return mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED;
+
+   const struct gl_framebuffer *fb = brw->ctx.DrawBuffer;
+   const unsigned rb_index = brw_find_matching_rb(fb, mt);
+
+   /* If we are drawing into this with compression enabled, then we must also
+    * enable compression when texturing from it regardless of
+    * fast_clear_state.  If we don't then, after the first draw call with
+    * this setup, there will be data in the CCS which won't get picked up by
+    * subsequent texturing operations as required by ARB_texture_barrier.
+    * Since we don't want to re-emit the binding table or do a resolve
+    * operation every draw call, the easiest thing to do is just enable
+    * compression on the texturing side.  This is completely safe to do
+    * since, if compressed texturing weren't allowed, we would have disabled
+    * compression of render targets in whatever_that_function_is_called().
+    */
+   if (rb_index < fb->_NumColorDrawBuffers) {
+      if (brw->draw_aux_buffer_disabled[rb_index]) {
+         assert(mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED);
+      }
+
+      return brw->draw_aux_buffer_disabled[rb_index];
+   }
+
+   return mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED;
+}
+
 void
 brw_update_texture_surface(struct gl_context *ctx,
                            unsigned unit,
@@ -520,11 +606,11 @@ brw_update_texture_surface(struct gl_context *ctx,
          .levels = intel_obj->_MaxLevel - obj->BaseLevel + 1,
          .base_array_layer = obj->MinLayer,
          .array_len = view_num_layers,
-         .channel_select = {
-            swizzle_to_scs(GET_SWZ(swizzle, 0), need_green_to_blue),
-            swizzle_to_scs(GET_SWZ(swizzle, 1), need_green_to_blue),
-            swizzle_to_scs(GET_SWZ(swizzle, 2), need_green_to_blue),
-            swizzle_to_scs(GET_SWZ(swizzle, 3), need_green_to_blue),
+         .swizzle = {
+            .r = swizzle_to_scs(GET_SWZ(swizzle, 0), need_green_to_blue),
+            .g = swizzle_to_scs(GET_SWZ(swizzle, 1), need_green_to_blue),
+            .b = swizzle_to_scs(GET_SWZ(swizzle, 2), need_green_to_blue),
+            .a = swizzle_to_scs(GET_SWZ(swizzle, 3), need_green_to_blue),
          },
          .usage = ISL_SURF_USAGE_TEXTURE_BIT,
       };
@@ -533,7 +619,11 @@ brw_update_texture_surface(struct gl_context *ctx,
           obj->Target == GL_TEXTURE_CUBE_MAP_ARRAY)
          view.usage |= ISL_SURF_USAGE_CUBE_BIT;
 
-      brw_emit_surface_state(brw, mt, mt->target, view,
+      assert(brw_texture_view_sane(brw, mt, format));
+
+      const int flags =
+         brw_disable_aux_surface(brw, mt) ? INTEL_AUX_BUFFER_DISABLED : 0;
+      brw_emit_surface_state(brw, mt, flags, mt->target, view,
                              surface_state_infos[brw->gen].tex_mocs,
                              surf_offset, surf_index,
                              I915_GEM_DOMAIN_SAMPLER, 0);
@@ -865,7 +955,7 @@ brw_emit_null_surface_state(struct brw_context *brw,
 static uint32_t
 gen4_update_renderbuffer_surface(struct brw_context *brw,
                                  struct gl_renderbuffer *rb,
-                                 bool layered, unsigned unit,
+                                 uint32_t flags, unsigned unit,
                                  uint32_t surf_index)
 {
    struct gl_context *ctx = &brw->ctx;
@@ -879,7 +969,8 @@ gen4_update_renderbuffer_surface(struct brw_context *brw,
    mesa_format rb_format = _mesa_get_render_format(ctx, intel_rb_format(irb));
    /* BRW_NEW_FS_PROG_DATA */
 
-   assert(!layered);
+   assert(!(flags & INTEL_RENDERBUFFER_LAYERED));
+   assert(!(flags & INTEL_AUX_BUFFER_DISABLED));
 
    if (rb->TexImage && !brw->has_surface_tile_offset) {
       intel_renderbuffer_get_tile_offsets(irb, &tile_x, &tile_y);
@@ -982,12 +1073,15 @@ brw_update_renderbuffer_surfaces(struct brw_context *brw,
    if (fb->_NumColorDrawBuffers >= 1) {
       for (i = 0; i < fb->_NumColorDrawBuffers; i++) {
          const uint32_t surf_index = render_target_start + i;
+         const int flags = (_mesa_geometric_layers(fb) > 0 ?
+                              INTEL_RENDERBUFFER_LAYERED : 0) |
+                           (brw->draw_aux_buffer_disabled[i] ? 
+                              INTEL_AUX_BUFFER_DISABLED : 0);
 
 	 if (intel_renderbuffer(fb->_ColorDrawBuffers[i])) {
             surf_offset[surf_index] =
                brw->vtbl.update_renderbuffer_surface(
-                  brw, fb->_ColorDrawBuffers[i],
-                  _mesa_geometric_layers(fb) > 0, i, surf_index);
+                  brw, fb->_ColorDrawBuffers[i], flags, i, surf_index);
 	 } else {
             brw->vtbl.emit_null_surface_state(brw, w, h, s,
                &surf_offset[surf_index]);
@@ -1090,16 +1184,13 @@ update_renderbuffer_read_surfaces(struct brw_context *brw)
                .levels = 1,
                .base_array_layer = irb->mt_layer / mt_layer_unit,
                .array_len = irb->layer_count,
-               .channel_select = {
-                  ISL_CHANNEL_SELECT_RED,
-                  ISL_CHANNEL_SELECT_GREEN,
-                  ISL_CHANNEL_SELECT_BLUE,
-                  ISL_CHANNEL_SELECT_ALPHA,
-               },
+               .swizzle = ISL_SWIZZLE_IDENTITY,
                .usage = ISL_SURF_USAGE_TEXTURE_BIT,
             };
 
-            brw_emit_surface_state(brw, irb->mt, target, view,
+            const int flags = brw->draw_aux_buffer_disabled[i] ?
+                                 INTEL_AUX_BUFFER_DISABLED : 0;
+            brw_emit_surface_state(brw, irb->mt, flags, target, view,
                                    surface_state_infos[brw->gen].tex_mocs,
                                    surf_offset, surf_index,
                                    I915_GEM_DOMAIN_SAMPLER, 0);
@@ -1486,7 +1577,7 @@ const struct brw_tracked_state brw_cs_image_surfaces = {
 static uint32_t
 get_image_format(struct brw_context *brw, mesa_format format, GLenum access)
 {
-   const struct brw_device_info *devinfo = brw->intelScreen->devinfo;
+   const struct gen_device_info *devinfo = brw->intelScreen->devinfo;
    uint32_t hw_format = brw_format_for_mesa_format(format);
    if (access == GL_WRITE_ONLY) {
       return hw_format;
@@ -1647,18 +1738,15 @@ update_image_surface(struct brw_context *brw,
                .levels = 1,
                .base_array_layer = obj->MinLayer + u->_Layer,
                .array_len = num_layers,
-               .channel_select = {
-                  ISL_CHANNEL_SELECT_RED,
-                  ISL_CHANNEL_SELECT_GREEN,
-                  ISL_CHANNEL_SELECT_BLUE,
-                  ISL_CHANNEL_SELECT_ALPHA,
-               },
+               .swizzle = ISL_SWIZZLE_IDENTITY,
                .usage = ISL_SURF_USAGE_STORAGE_BIT,
             };
 
             const int surf_index = surf_offset - &brw->wm.base.surf_offset[0];
-
-            brw_emit_surface_state(brw, mt, mt->target, view,
+            const int flags =
+               mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED ?
+               INTEL_AUX_BUFFER_DISABLED : 0;
+            brw_emit_surface_state(brw, mt, flags, mt->target, view,
                                    surface_state_infos[brw->gen].tex_mocs,
                                    surf_offset, surf_index,
                                    I915_GEM_DOMAIN_SAMPLER,

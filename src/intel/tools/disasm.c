@@ -32,17 +32,28 @@
 uint64_t INTEL_DEBUG;
 
 struct gen_disasm {
-    struct brw_device_info devinfo;
+    struct gen_device_info devinfo;
 };
 
-void
-gen_disasm_disassemble(struct gen_disasm *disasm, void *assembly, int start,
-                       int end, FILE *out)
+static bool
+is_send(uint32_t opcode)
 {
-   struct brw_device_info *devinfo = &disasm->devinfo;
-   bool dump_hex = false;
+   return (opcode == BRW_OPCODE_SEND  ||
+           opcode == BRW_OPCODE_SENDC ||
+           opcode == BRW_OPCODE_SENDS ||
+           opcode == BRW_OPCODE_SENDSC );
+}
 
-   for (int offset = start; offset < end;) {
+void
+gen_disasm_disassemble(struct gen_disasm *disasm, void *assembly,
+                       int start, FILE *out)
+{
+   struct gen_device_info *devinfo = &disasm->devinfo;
+   bool dump_hex = false;
+   int offset = start;
+
+   /* This loop exits when send-with-EOT or when opcode is 0 */
+   while (true) {
       brw_inst *insn = assembly + offset;
       brw_inst uncompacted;
       bool compacted = brw_inst_cmpt_control(devinfo, insn);
@@ -74,14 +85,10 @@ gen_disasm_disassemble(struct gen_disasm *disasm, void *assembly, int start,
       brw_disassemble_inst(out, devinfo, insn, compacted);
 
       /* Simplistic, but efficient way to terminate disasm */
-      if (brw_inst_opcode(devinfo, insn) == BRW_OPCODE_SEND ||
-          brw_inst_opcode(devinfo, insn) == BRW_OPCODE_SENDC) {
-         if (brw_inst_eot(devinfo, insn))
-            break;
-      }
-
-      if (brw_inst_opcode(devinfo, insn) == 0)
+      uint32_t opcode = brw_inst_opcode(devinfo, insn);
+      if (opcode == 0 || (is_send(opcode) && brw_inst_eot(devinfo, insn))) {
          break;
+      }
    }
 }
 
@@ -89,18 +96,12 @@ struct gen_disasm *
 gen_disasm_create(int pciid)
 {
    struct gen_disasm *gd;
-   const struct brw_device_info *dev_info = NULL;
 
    gd = malloc(sizeof *gd);
    if (gd == NULL)
       return NULL;
 
-   dev_info = brw_get_device_info(pciid);
-
-   gd->devinfo.gen = dev_info->gen;
-   gd->devinfo.is_cherryview = dev_info->is_cherryview;
-   gd->devinfo.is_g4x = dev_info->is_g4x;
-
+   gd->devinfo = *gen_get_device_info(pciid);
    brw_init_compaction_tables(&gd->devinfo);
 
    return gd;

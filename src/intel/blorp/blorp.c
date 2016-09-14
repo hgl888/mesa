@@ -64,16 +64,6 @@ brw_blorp_surface_info_init(struct blorp_context *blorp,
                             unsigned int level, unsigned int layer,
                             enum isl_format format, bool is_render_target)
 {
-   /* Layer is a physical layer, so if this is a 2D multisample array texture
-    * using INTEL_MSAA_LAYOUT_UMS or INTEL_MSAA_LAYOUT_CMS, then it had better
-    * be a multiple of num_samples.
-    */
-   unsigned layer_multiplier = 1;
-   if (surf->surf->msaa_layout == ISL_MSAA_LAYOUT_ARRAY) {
-      assert(layer % surf->surf->samples == 0);
-      layer_multiplier = surf->surf->samples;
-   }
-
    if (format == ISL_FORMAT_UNSUPPORTED)
       format = surf->surf->format;
 
@@ -111,13 +101,11 @@ brw_blorp_surface_info_init(struct blorp_context *blorp,
       .format = format,
       .base_level = level,
       .levels = 1,
-      .channel_select = {
-         ISL_CHANNEL_SELECT_RED,
-         ISL_CHANNEL_SELECT_GREEN,
-         ISL_CHANNEL_SELECT_BLUE,
-         ISL_CHANNEL_SELECT_ALPHA,
-      },
+      .swizzle = ISL_SWIZZLE_IDENTITY,
    };
+
+   info->view.array_len = MAX2(info->surf.logical_level0_px.depth,
+                               info->surf.logical_level0_px.array_len);
 
    if (!is_render_target &&
        (info->surf.dim == ISL_SURF_DIM_3D ||
@@ -128,14 +116,20 @@ brw_blorp_surface_info_init(struct blorp_context *blorp,
        * guaranteed that we won't be doing any funny surface hacks.
        */
       info->view.base_array_layer = 0;
-      info->view.array_len = MAX2(info->surf.logical_level0_px.depth,
-                                  info->surf.logical_level0_px.array_len);
-      info->z_offset = layer / layer_multiplier;
+      info->z_offset = layer;
    } else {
-      info->view.base_array_layer = layer / layer_multiplier;
-      info->view.array_len = 1;
+      info->view.base_array_layer = layer;
+
+      assert(info->view.array_len >= info->view.base_array_layer);
+      info->view.array_len -= info->view.base_array_layer;
       info->z_offset = 0;
    }
+
+   /* Sandy Bridge has a limit of a maximum of 512 layers for layered
+    * rendering.
+    */
+   if (is_render_target && blorp->isl_dev->info->gen == 6)
+      info->view.array_len = MIN2(info->view.array_len, 512);
 }
 
 

@@ -172,9 +172,21 @@ get_qpitch(const struct isl_surf *surf)
    default:
       unreachable("Bad isl_surf_dim");
    case ISL_DIM_LAYOUT_GEN4_2D:
-   case ISL_DIM_LAYOUT_GEN4_3D:
       if (GEN_GEN >= 9) {
-         return isl_surf_get_array_pitch_el_rows(surf);
+         if (surf->dim == ISL_SURF_DIM_3D && surf->tiling == ISL_TILING_W) {
+            /* This is rather annoying and completely undocumented.  It
+             * appears that the hardware has a bug (or undocumented feature)
+             * regarding stencil buffers most likely related to the way
+             * W-tiling is handled as modified Y-tiling.  If you bind a 3-D
+             * stencil buffer normally, and use texelFetch on it, the z or
+             * array index will get implicitly multiplied by 2 for no obvious
+             * reason.  The fix appears to be to divide qpitch by 2 for
+             * W-tiled surfaces.
+             */
+            return isl_surf_get_array_pitch_el_rows(surf) / 2;
+         } else {
+            return isl_surf_get_array_pitch_el_rows(surf);
+         }
       } else {
          /* From the Broadwell PRM for RENDER_SURFACE_STATE.QPitch
           *
@@ -199,6 +211,22 @@ get_qpitch(const struct isl_surf *surf)
        *    slices.
        */
       return isl_surf_get_array_pitch_el(surf);
+   case ISL_DIM_LAYOUT_GEN4_3D:
+      /* QPitch doesn't make sense for ISL_DIM_LAYOUT_GEN4_3D since it uses a
+       * different pitch at each LOD.  Also, the QPitch field is ignored for
+       * these surfaces.  From the Broadwell PRM documentation for QPitch:
+       *
+       *    This field specifies the distance in rows between array slices. It
+       *    is used only in the following cases:
+       *     - Surface Array is enabled OR
+       *     - Number of Mulitsamples is not NUMSAMPLES_1 and Multisampled
+       *       Surface Storage Format set to MSFMT_MSS OR
+       *     - Surface Type is SURFTYPE_CUBE
+       *
+       * None of the three conditions above can possibly apply to a 3D surface
+       * so it is safe to just set QPitch to 0.
+       */
+      return 0;
    }
 }
 #endif /* GEN_GEN >= 8 */
@@ -288,8 +316,6 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
          s.RenderTargetViewExtent = s.Depth;
       break;
    case SURFTYPE_3D:
-      s.MinimumArrayElement = info->view->base_array_layer;
-
       /* From the Broadwell PRM >> RENDER_SURFACE_STATE::Depth:
        *
        *    If the volume texture is MIP-mapped, this field specifies the
@@ -309,11 +335,16 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
        * textures with more levels than we can render to.  In order to prevent
        * assert-failures in the packing function below, we only set the field
        * when it's actually going to be used by the hardware.
+       *
+       * Similaraly, the MinimumArrayElement field is ignored by all hardware
+       * prior to Sky Lake when texturing and we want it set to 0 anyway.
+       * Since it's already initialized to 0, we can just leave it alone for
+       * texture surfaces.
        */
       if (info->view->usage & (ISL_SURF_USAGE_RENDER_TARGET_BIT |
                                ISL_SURF_USAGE_STORAGE_BIT)) {
-         s.RenderTargetViewExtent = isl_minify(info->surf->logical_level0_px.depth,
-                                               info->view->base_level) - 1;
+         s.MinimumArrayElement = info->view->base_array_layer;
+         s.RenderTargetViewExtent = info->view->array_len - 1;
       }
       break;
    default:
@@ -408,10 +439,10 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 
 #if (GEN_GEN >= 8 || GEN_IS_HASWELL)
-   s.ShaderChannelSelectRed = info->view->channel_select[0];
-   s.ShaderChannelSelectGreen = info->view->channel_select[1];
-   s.ShaderChannelSelectBlue = info->view->channel_select[2];
-   s.ShaderChannelSelectAlpha = info->view->channel_select[3];
+   s.ShaderChannelSelectRed = info->view->swizzle.r;
+   s.ShaderChannelSelectGreen = info->view->swizzle.g;
+   s.ShaderChannelSelectBlue = info->view->swizzle.b;
+   s.ShaderChannelSelectAlpha = info->view->swizzle.a;
 #endif
 
    s.SurfaceBaseAddress = info->address;

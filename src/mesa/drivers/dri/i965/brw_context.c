@@ -168,6 +168,24 @@ intel_update_framebuffer(struct gl_context *ctx,
                                  fb->DefaultGeometry.NumSamples);
 }
 
+static bool
+intel_disable_rb_aux_buffer(struct brw_context *brw, const drm_intel_bo *bo)
+{
+   const struct gl_framebuffer *fb = brw->ctx.DrawBuffer;
+   bool found = false;
+
+   for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
+      const struct intel_renderbuffer *irb =
+         intel_renderbuffer(fb->_ColorDrawBuffers[i]);
+
+      if (irb && irb->mt->bo == bo) {
+         found = brw->draw_aux_buffer_disabled[i] = true;
+      }
+   }
+
+   return found;
+}
+
 /* On Gen9 color buffers may be compressed by the hardware (lossless
  * compression). There are, however, format restrictions and care needs to be
  * taken that the sampler engine is capable for re-interpreting a buffer with
@@ -197,6 +215,10 @@ intel_texture_view_requires_resolve(struct brw_context *brw,
               _mesa_get_format_name(intel_tex->_Format),
               _mesa_get_format_name(intel_tex->mt->format));
 
+   if (intel_disable_rb_aux_buffer(brw, intel_tex->mt->bo))
+      perf_debug("Sampling renderbuffer with non-compressible format - "
+                 "turning off compression");
+
    return true;
 }
 
@@ -219,6 +241,9 @@ intel_update_state(struct gl_context * ctx, GLuint new_state)
    depth_irb = intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
    if (depth_irb)
       intel_renderbuffer_resolve_hiz(brw, depth_irb);
+
+   memset(brw->draw_aux_buffer_disabled, 0,
+          sizeof(brw->draw_aux_buffer_disabled));
 
    /* Resolve depth buffer and render cache of each enabled texture. */
    int maxEnabledUnit = ctx->Texture._MaxEnabledTexImageUnit;
@@ -258,17 +283,25 @@ intel_update_state(struct gl_context * ctx, GLuint new_state)
                /* Access to images is implemented using indirect messages
                 * against data port. Normal render target write understands
                 * lossless compression but unfortunately the typed/untyped
-                * read/write interface doesn't. Therefore the compressed
-                * surfaces need to be resolved prior to accessing them.
+                * read/write interface doesn't. Therefore even lossless
+                * compressed surfaces need to be resolved prior to accessing
+                * them. Hence skip setting INTEL_MIPTREE_IGNORE_CCS_E.
                 */
                intel_miptree_resolve_color(brw, tex_obj->mt, 0);
+
+               if (intel_miptree_is_lossless_compressed(brw, tex_obj->mt) &&
+                   intel_disable_rb_aux_buffer(brw, tex_obj->mt->bo)) {
+                  perf_debug("Using renderbuffer as shader image - turning "
+                             "off lossless compression");
+               }
+
                brw_render_cache_set_check_flush(brw, tex_obj->mt->bo);
             }
          }
       }
    }
 
-   /* Resolve color buffers for non-coherent framebufer fetch. */
+   /* Resolve color buffers for non-coherent framebuffer fetch. */
    if (!ctx->Extensions.MESA_shader_framebuffer_fetch &&
        ctx->FragmentProgram._Current &&
        ctx->FragmentProgram._Current->Base.OutputsRead) {
@@ -491,16 +524,7 @@ brw_initialize_context_constants(struct brw_context *brw)
    ctx->Const.MaxImageUnits = MAX_IMAGE_UNITS;
    ctx->Const.MaxRenderbufferSize = 8192;
    ctx->Const.MaxTextureLevels = MIN2(14 /* 8192 */, MAX_TEXTURE_LEVELS);
-
-   /* On Sandy Bridge and prior, the "Render Target View Extent" field of
-    * RENDER_SURFACE_STATE is only 9 bits so the largest 3-D texture we can do
-    * a layered render into has a depth of 512.  On Iron Lake and earlier, we
-    * don't support layered rendering and we use manual offsetting to render
-    * into the different layers so this doesn't matter.  On Sandy Bridge,
-    * however, we do support layered rendering so this is a problem.
-    */
-   ctx->Const.Max3DTextureLevels = brw->gen == 6 ? 10 /* 512 */ : 12; /* 2048 */
-
+   ctx->Const.Max3DTextureLevels = 12; /* 2048 */
    ctx->Const.MaxCubeTextureLevels = 14; /* 8192 */
    ctx->Const.MaxArrayTextureLayers = brw->gen >= 7 ? 2048 : 512;
    ctx->Const.MaxTextureMbytes = 1536;
@@ -782,7 +806,7 @@ brw_initialize_cs_context_constants(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    const struct intel_screen *screen = brw->intelScreen;
-   const struct brw_device_info *devinfo = screen->devinfo;
+   const struct gen_device_info *devinfo = screen->devinfo;
 
    /* FINISHME: Do this for all platforms that the kernel supports */
    if (brw->is_cherryview &&
@@ -896,7 +920,7 @@ brwCreateContext(gl_api api,
    __DRIscreen *sPriv = driContextPriv->driScreenPriv;
    struct gl_context *shareCtx = (struct gl_context *) sharedContextPrivate;
    struct intel_screen *screen = sPriv->driverPrivate;
-   const struct brw_device_info *devinfo = screen->devinfo;
+   const struct gen_device_info *devinfo = screen->devinfo;
    struct dd_function_table functions;
 
    /* Only allow the __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS flag if the kernel

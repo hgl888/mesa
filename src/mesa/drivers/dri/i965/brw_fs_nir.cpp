@@ -3151,7 +3151,7 @@ fs_inst *
 fs_visitor::emit_non_coherent_fb_read(const fs_builder &bld, const fs_reg &dst,
                                       unsigned target)
 {
-   const struct brw_device_info *devinfo = bld.shader->devinfo;
+   const struct gen_device_info *devinfo = bld.shader->devinfo;
 
    assert(bld.shader->stage == MESA_SHADER_FRAGMENT);
    const brw_wm_prog_key *wm_key =
@@ -4833,7 +4833,7 @@ shuffle_64bit_data_for_32bit_write(const fs_builder &bld,
 fs_reg
 setup_imm_df(const fs_builder &bld, double v)
 {
-   const struct brw_device_info *devinfo = bld.shader->devinfo;
+   const struct gen_device_info *devinfo = bld.shader->devinfo;
    assert(devinfo->gen >= 7);
 
    if (devinfo->gen >= 8)

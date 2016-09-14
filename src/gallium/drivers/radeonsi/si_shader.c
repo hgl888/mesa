@@ -107,7 +107,6 @@ struct si_shader_context
 
 	LLVMValueRef const_buffers[SI_NUM_CONST_BUFFERS];
 	LLVMValueRef lds;
-	LLVMValueRef *constants[SI_NUM_CONST_BUFFERS];
 	LLVMValueRef shader_buffers[SI_NUM_SHADER_BUFFERS];
 	LLVMValueRef sampler_views[SI_NUM_SAMPLERS];
 	LLVMValueRef sampler_states[SI_NUM_SAMPLERS];
@@ -1730,7 +1729,12 @@ static void declare_system_value(
 	}
 
 	case TGSI_SEMANTIC_VERTICESIN:
-		value = unpack_param(ctx, SI_PARAM_TCS_OUT_LAYOUT, 26, 6);
+		if (ctx->type == PIPE_SHADER_TESS_CTRL)
+			value = unpack_param(ctx, SI_PARAM_TCS_OUT_LAYOUT, 26, 6);
+		else if (ctx->type == PIPE_SHADER_TESS_EVAL)
+			value = unpack_param(ctx, SI_PARAM_TCS_OFFCHIP_LAYOUT, 9, 7);
+		else
+			assert(!"invalid shader stage for TGSI_SEMANTIC_VERTICESIN");
 		break;
 
 	case TGSI_SEMANTIC_TESSINNER:
@@ -1876,12 +1880,19 @@ static LLVMValueRef fetch_constant(
 	idx = reg->Register.Index * 4 + swizzle;
 
 	if (!reg->Register.Indirect && !reg->Dimension.Indirect) {
+		LLVMValueRef c0, c1;
+
+		c0 = buffer_load_const(ctx, ctx->const_buffers[buf],
+				       LLVMConstInt(ctx->i32, idx * 4, 0));
+
 		if (!tgsi_type_is_64bit(type))
-			return bitcast(bld_base, type, ctx->constants[buf][idx]);
+			return bitcast(bld_base, type, c0);
 		else {
+			c1 = buffer_load_const(ctx, ctx->const_buffers[buf],
+					       LLVMConstInt(ctx->i32,
+							    (idx + 1) * 4, 0));
 			return radeon_llvm_emit_fetch_64bit(bld_base, type,
-							    ctx->constants[buf][idx],
-							    ctx->constants[buf][idx + 1]);
+							    c0, c1);
 		}
 	}
 
@@ -1913,8 +1924,7 @@ static LLVMValueRef fetch_constant(
 		addr2 = lp_build_add(&bld_base->uint_bld, addr2,
 				     lp_build_const_int32(base->gallivm, idx * 4));
 
-		result2 = buffer_load_const(ctx, ctx->const_buffers[buf],
-					    addr2);
+		result2 = buffer_load_const(ctx, bufp, addr2);
 
 		result = radeon_llvm_emit_fetch_64bit(bld_base, type,
 						      result, result2);
@@ -2917,6 +2927,25 @@ struct si_ps_exports {
 	LLVMValueRef args[10][9];
 };
 
+unsigned si_get_spi_shader_z_format(bool writes_z, bool writes_stencil,
+				    bool writes_samplemask)
+{
+	if (writes_z) {
+		/* Z needs 32 bits. */
+		if (writes_samplemask)
+			return V_028710_SPI_SHADER_32_ABGR;
+		else if (writes_stencil)
+			return V_028710_SPI_SHADER_32_GR;
+		else
+			return V_028710_SPI_SHADER_32_R;
+	} else if (writes_stencil || writes_samplemask) {
+		/* Both stencil and sample mask need only 16 bits. */
+		return V_028710_SPI_SHADER_UINT16_ABGR;
+	} else {
+		return V_028710_SPI_SHADER_ZERO;
+	}
+}
+
 static void si_export_mrt_z(struct lp_build_tgsi_context *bld_base,
 			    LLVMValueRef depth, LLVMValueRef stencil,
 			    LLVMValueRef samplemask, struct si_ps_exports *exp)
@@ -2926,6 +2955,9 @@ static void si_export_mrt_z(struct lp_build_tgsi_context *bld_base,
 	struct lp_build_context *uint = &bld_base->uint_bld;
 	LLVMValueRef args[9];
 	unsigned mask = 0;
+	unsigned format = si_get_spi_shader_z_format(depth != NULL,
+						     stencil != NULL,
+						     samplemask != NULL);
 
 	assert(depth || stencil || samplemask);
 
@@ -2941,19 +2973,36 @@ static void si_export_mrt_z(struct lp_build_tgsi_context *bld_base,
 	args[7] = base->undef; /* B, sample mask */
 	args[8] = base->undef; /* A, alpha to mask */
 
-	if (depth) {
-		args[5] = depth;
-		mask |= 0x1;
-	}
+	if (format == V_028710_SPI_SHADER_UINT16_ABGR) {
+		assert(!depth);
+		args[4] = uint->one; /* COMPR flag */
 
-	if (stencil) {
-		args[6] = stencil;
-		mask |= 0x2;
-	}
-
-	if (samplemask) {
-		args[7] = samplemask;
-		mask |= 0x4;
+		if (stencil) {
+			/* Stencil should be in X[23:16]. */
+			stencil = bitcast(bld_base, TGSI_TYPE_UNSIGNED, stencil);
+			stencil = LLVMBuildShl(base->gallivm->builder, stencil,
+					       LLVMConstInt(ctx->i32, 16, 0), "");
+			args[5] = bitcast(bld_base, TGSI_TYPE_FLOAT, stencil);
+			mask |= 0x3;
+		}
+		if (samplemask) {
+			/* SampleMask should be in Y[15:0]. */
+			args[6] = samplemask;
+			mask |= 0xc;
+		}
+	} else {
+		if (depth) {
+			args[5] = depth;
+			mask |= 0x1;
+		}
+		if (stencil) {
+			args[6] = stencil;
+			mask |= 0x2;
+		}
+		if (samplemask) {
+			args[7] = samplemask;
+			mask |= 0x4;
+		}
 	}
 
 	/* SI (except OLAND) has a bug that it only looks
@@ -3056,10 +3105,10 @@ static void si_export_null(struct lp_build_tgsi_context *bld_base)
 	args[2] = uint->one; /* DONE bit */
 	args[3] = lp_build_const_int32(base->gallivm, V_008DFC_SQ_EXP_NULL);
 	args[4] = uint->zero; /* COMPR flag (0 = 32-bit export) */
-	args[5] = uint->undef; /* R */
-	args[6] = uint->undef; /* G */
-	args[7] = uint->undef; /* B */
-	args[8] = uint->undef; /* A */
+	args[5] = base->undef; /* R */
+	args[6] = base->undef; /* G */
+	args[7] = base->undef; /* B */
+	args[8] = base->undef; /* A */
 
 	lp_build_intrinsic(base->gallivm->builder, "llvm.SI.export",
 			   ctx->voidt, args, 9, 0);
@@ -4100,7 +4149,7 @@ static void resq_fetch_args(
 	const struct tgsi_full_instruction *inst = emit_data->inst;
 	const struct tgsi_full_src_register *reg = &inst->Src[0];
 
-	emit_data->dst_type = LLVMVectorType(bld_base->base.elem_type, 4);
+	emit_data->dst_type = ctx->v4i32;
 
 	if (reg->Register.File == TGSI_FILE_BUFFER) {
 		emit_data->args[0] = shader_buffer_fetch_rsrc(ctx, reg);
@@ -4151,9 +4200,7 @@ static void resq_emit(
 			LLVMValueRef imm6 = lp_build_const_int32(gallivm, 6);
 
 			LLVMValueRef z = LLVMBuildExtractElement(builder, out, imm2, "");
-			z = LLVMBuildBitCast(builder, z, bld_base->uint_bld.elem_type, "");
 			z = LLVMBuildSDiv(builder, z, imm6, "");
-			z = LLVMBuildBitCast(builder, z, bld_base->base.elem_type, "");
 			out = LLVMBuildInsertElement(builder, out, z, imm2, "");
 		}
 	}
@@ -4721,16 +4768,86 @@ static void tex_fetch_args(
 			   samp_ptr, address, count, dmask);
 }
 
+/* Gather4 should follow the same rules as bilinear filtering, but the hardware
+ * incorrectly forces nearest filtering if the texture format is integer.
+ * The only effect it has on Gather4, which always returns 4 texels for
+ * bilinear filtering, is that the final coordinates are off by 0.5 of
+ * the texel size.
+ *
+ * The workaround is to subtract 0.5 from the unnormalized coordinates,
+ * or (0.5 / size) from the normalized coordinates.
+ */
+static void si_lower_gather4_integer(struct si_shader_context *ctx,
+				     struct lp_build_emit_data *emit_data,
+				     const char *intr_name,
+				     unsigned coord_vgpr_index)
+{
+	LLVMBuilderRef builder = ctx->radeon_bld.gallivm.builder;
+	LLVMValueRef coord = emit_data->args[0];
+	LLVMValueRef half_texel[2];
+	int c;
+
+	if (emit_data->inst->Texture.Texture == TGSI_TEXTURE_RECT ||
+	    emit_data->inst->Texture.Texture == TGSI_TEXTURE_SHADOWRECT) {
+		half_texel[0] = half_texel[1] = LLVMConstReal(ctx->f32, -0.5);
+	} else {
+		struct tgsi_full_instruction txq_inst = {};
+		struct lp_build_emit_data txq_emit_data = {};
+
+		/* Query the texture size. */
+		txq_inst.Texture.Texture = emit_data->inst->Texture.Texture;
+		txq_emit_data.inst = &txq_inst;
+		txq_emit_data.dst_type = ctx->v4i32;
+		set_tex_fetch_args(ctx, &txq_emit_data, TGSI_OPCODE_TXQ,
+				   txq_inst.Texture.Texture,
+				   emit_data->args[1], NULL,
+				   &ctx->radeon_bld.soa.bld_base.uint_bld.zero,
+				   1, 0xf);
+		txq_emit(NULL, &ctx->radeon_bld.soa.bld_base, &txq_emit_data);
+
+		/* Compute -0.5 / size. */
+		for (c = 0; c < 2; c++) {
+			half_texel[c] =
+				LLVMBuildExtractElement(builder, txq_emit_data.output[0],
+							LLVMConstInt(ctx->i32, c, 0), "");
+			half_texel[c] = LLVMBuildUIToFP(builder, half_texel[c], ctx->f32, "");
+			half_texel[c] =
+				lp_build_emit_llvm_unary(&ctx->radeon_bld.soa.bld_base,
+							 TGSI_OPCODE_RCP, half_texel[c]);
+			half_texel[c] = LLVMBuildFMul(builder, half_texel[c],
+						      LLVMConstReal(ctx->f32, -0.5), "");
+		}
+	}
+
+	for (c = 0; c < 2; c++) {
+		LLVMValueRef tmp;
+		LLVMValueRef index = LLVMConstInt(ctx->i32, coord_vgpr_index + c, 0);
+
+		tmp = LLVMBuildExtractElement(builder, coord, index, "");
+		tmp = LLVMBuildBitCast(builder, tmp, ctx->f32, "");
+		tmp = LLVMBuildFAdd(builder, tmp, half_texel[c], "");
+		tmp = LLVMBuildBitCast(builder, tmp, ctx->i32, "");
+		coord = LLVMBuildInsertElement(builder, coord, tmp, index, "");
+	}
+
+	emit_data->args[0] = coord;
+	emit_data->output[emit_data->chan] =
+		lp_build_intrinsic(builder, intr_name, emit_data->dst_type,
+				   emit_data->args, emit_data->arg_count,
+				   LLVMReadNoneAttribute);
+}
+
 static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 				struct lp_build_tgsi_context *bld_base,
 				struct lp_build_emit_data *emit_data)
 {
 	struct si_shader_context *ctx = si_shader_context(bld_base);
 	struct lp_build_context *base = &bld_base->base;
-	unsigned opcode = emit_data->inst->Instruction.Opcode;
-	unsigned target = emit_data->inst->Texture.Texture;
+	const struct tgsi_full_instruction *inst = emit_data->inst;
+	unsigned opcode = inst->Instruction.Opcode;
+	unsigned target = inst->Texture.Texture;
 	char intr_name[127];
-	bool has_offset = emit_data->inst->Texture.NumOffsets > 0;
+	bool has_offset = inst->Texture.NumOffsets > 0;
 	bool is_shadow = tgsi_is_shadow_target(target);
 	char type[64];
 	const char *name = "llvm.SI.image.sample";
@@ -4791,6 +4908,29 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 	sprintf(intr_name, "%s%s%s%s.%s",
 		name, is_shadow ? ".c" : "", infix,
 		has_offset ? ".o" : "", type);
+
+	/* The hardware needs special lowering for Gather4 with integer formats. */
+	if (opcode == TGSI_OPCODE_TG4) {
+		struct tgsi_shader_info *info = &ctx->shader->selector->info;
+		/* This will also work with non-constant indexing because of how
+		 * glsl_to_tgsi works and we intent to preserve that behavior.
+		 */
+		const unsigned src_idx = 2;
+		unsigned sampler = inst->Src[src_idx].Register.Index;
+
+		assert(inst->Src[src_idx].Register.File == TGSI_FILE_SAMPLER);
+
+		if (info->sampler_type[sampler] == TGSI_RETURN_TYPE_SINT ||
+		    info->sampler_type[sampler] == TGSI_RETURN_TYPE_UINT) {
+			/* Texture coordinates start after:
+			 *   {offset, bias, z-compare, derivatives}
+			 * Only the offset and z-compare can occur here.
+			 */
+			si_lower_gather4_integer(ctx, emit_data, intr_name,
+						 (int)has_offset + (int)is_shadow);
+			return;
+		}
+	}
 
 	emit_data->output[emit_data->chan] = lp_build_intrinsic(
 		base->gallivm->builder, intr_name, emit_data->dst_type,
@@ -5700,25 +5840,12 @@ static void preload_constants(struct si_shader_context *ctx)
 	LLVMValueRef ptr = LLVMGetParam(ctx->radeon_bld.main_fn, SI_PARAM_CONST_BUFFERS);
 
 	for (buf = 0; buf < SI_NUM_CONST_BUFFERS; buf++) {
-		unsigned i, num_const = info->const_file_max[buf] + 1;
-
-		if (num_const == 0)
+		if (info->const_file_max[buf] == -1)
 			continue;
-
-		/* Allocate space for the constant values */
-		ctx->constants[buf] = CALLOC(num_const * 4, sizeof(LLVMValueRef));
 
 		/* Load the resource descriptor */
 		ctx->const_buffers[buf] =
 			build_indexed_load_const(ctx, ptr, lp_build_const_int32(gallivm, buf));
-
-		/* Load the constants, we rely on the code sinking to do the rest */
-		for (i = 0; i < num_const * 4; ++i) {
-			ctx->constants[buf][i] =
-				buffer_load_const(ctx,
-					ctx->const_buffers[buf],
-					lp_build_const_int32(gallivm, i * 4));
-		}
 	}
 }
 
@@ -6809,8 +6936,6 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 	}
 
 out:
-	for (int i = 0; i < SI_NUM_CONST_BUFFERS; i++)
-		FREE(ctx.constants[i]);
 	return r;
 }
 

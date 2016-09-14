@@ -639,12 +639,12 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
       goto cleanup;
 
    dri2_dpy->fd = fd;
-   dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);
    dri2_dpy->driver_name = strdup(dri2_dpy->gbm_dri->base.driver_name);
 
    dri2_dpy->dri_screen = dri2_dpy->gbm_dri->screen;
    dri2_dpy->core = dri2_dpy->gbm_dri->core;
    dri2_dpy->dri2 = dri2_dpy->gbm_dri->dri2;
+   dri2_dpy->fence = dri2_dpy->gbm_dri->fence;
    dri2_dpy->image = dri2_dpy->gbm_dri->image;
    dri2_dpy->flush = dri2_dpy->gbm_dri->flush;
    dri2_dpy->swrast = dri2_dpy->gbm_dri->swrast;
@@ -701,6 +701,8 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
 
 #ifdef HAVE_WAYLAND_PLATFORM
    if (dri2_dpy->image) {
+       dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);
+
        if (dri2_dpy->image->base.version >= 10 &&
            dri2_dpy->image->getCapabilities != NULL) {
            int capabilities;

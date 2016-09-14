@@ -406,11 +406,13 @@ _eglCreateExtensionsString(_EGLDisplay *dpy)
       _eglAppendExtension(&exts, "EGL_KHR_image");
    _EGL_CHECK_EXTENSION(KHR_image_base);
    _EGL_CHECK_EXTENSION(KHR_image_pixmap);
+   _EGL_CHECK_EXTENSION(KHR_no_config_context);
    _EGL_CHECK_EXTENSION(KHR_reusable_sync);
    _EGL_CHECK_EXTENSION(KHR_surfaceless_context);
    _EGL_CHECK_EXTENSION(KHR_wait_sync);
 
-   _EGL_CHECK_EXTENSION(MESA_configless_context);
+   if (dpy->Extensions.KHR_no_config_context)
+      _eglAppendExtension(&exts, "EGL_MESA_configless_context");
    _EGL_CHECK_EXTENSION(MESA_drm_image);
    _EGL_CHECK_EXTENSION(MESA_image_dma_buf_export);
 
@@ -627,7 +629,7 @@ eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share_list,
 
    _EGL_CHECK_DISPLAY(disp, EGL_NO_CONTEXT, drv);
 
-   if (!config && !disp->Extensions.MESA_configless_context)
+   if (!config && !disp->Extensions.KHR_no_config_context)
       RETURN_EGL_ERROR(disp, EGL_BAD_CONFIG, EGL_NO_CONTEXT);
 
    if (!share && share_list != EGL_NO_CONTEXT)
@@ -1088,18 +1090,8 @@ eglWaitClient(void)
 EGLBoolean EGLAPIENTRY
 eglWaitGL(void)
 {
-   _EGLThreadInfo *t = _eglGetCurrentThread();
-   EGLint api_index = t->CurrentAPIIndex;
-   EGLint es_index = _eglConvertApiToIndex(EGL_OPENGL_ES_API);
-   EGLBoolean ret;
-
-   if (api_index != es_index && _eglIsCurrentThreadDummy())
-      RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, EGL_FALSE);
-
-   t->CurrentAPIIndex = es_index;
-   ret = eglWaitClient();
-   t->CurrentAPIIndex = api_index;
-   return ret;
+   /* Since we only support OpenGL and GLES, eglWaitGL is equivalent to eglWaitClient. */
+   return eglWaitClient();
 }
 
 
@@ -1222,7 +1214,7 @@ eglBindAPI(EGLenum api)
    if (!_eglIsApiValid(api))
       RETURN_EGL_ERROR(NULL, EGL_BAD_PARAMETER, EGL_FALSE);
 
-   t->CurrentAPIIndex = _eglConvertApiToIndex(api);
+   t->CurrentAPI = api;
 
    RETURN_EGL_SUCCESS(NULL, EGL_TRUE);
 }
@@ -1238,7 +1230,7 @@ eglQueryAPI(void)
    EGLenum ret;
 
    /* returns one of EGL_OPENGL_API, EGL_OPENGL_ES_API or EGL_OPENVG_API */
-   ret = _eglConvertApiFromIndex(t->CurrentAPIIndex);
+   ret = t->CurrentAPI;
 
    RETURN_EGL_SUCCESS(NULL, ret);
 }
@@ -1271,25 +1263,17 @@ eglReleaseThread(void)
    /* unbind current contexts */
    if (!_eglIsCurrentThreadDummy()) {
       _EGLThreadInfo *t = _eglGetCurrentThread();
-      EGLint api_index = t->CurrentAPIIndex;
-      EGLint i;
 
-      for (i = 0; i < _EGL_API_NUM_APIS; i++) {
-         _EGLContext *ctx = t->CurrentContexts[i];
-         if (ctx) {
-            _EGLDisplay *disp = ctx->Resource.Display;
-            _EGLDriver *drv;
+      _EGLContext *ctx = t->CurrentContext;
+      if (ctx) {
+         _EGLDisplay *disp = ctx->Resource.Display;
+         _EGLDriver *drv;
 
-            t->CurrentAPIIndex = i;
-
-            mtx_lock(&disp->Mutex);
-            drv = disp->Driver;
-            (void) drv->API.MakeCurrent(drv, disp, NULL, NULL, NULL);
-            mtx_unlock(&disp->Mutex);
-         }
+         mtx_lock(&disp->Mutex);
+         drv = disp->Driver;
+         (void) drv->API.MakeCurrent(drv, disp, NULL, NULL, NULL);
+         mtx_unlock(&disp->Mutex);
       }
-
-      t->CurrentAPIIndex = api_index;
    }
 
    _eglDestroyCurrentThread();

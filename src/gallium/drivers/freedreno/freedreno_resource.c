@@ -425,7 +425,7 @@ fd_resource_transfer_unmap(struct pipe_context *pctx,
 				   ptrans->box.x + ptrans->box.width);
 
 	pipe_resource_reference(&ptrans->resource, NULL);
-	util_slab_free(&ctx->transfer_pool, ptrans);
+	slab_free_st(&ctx->transfer_pool, ptrans);
 
 	free(trans->staging);
 }
@@ -451,11 +451,11 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 	DBG("prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d", prsc, level, usage,
 		box->width, box->height, box->x, box->y);
 
-	ptrans = util_slab_alloc(&ctx->transfer_pool);
+	ptrans = slab_alloc_st(&ctx->transfer_pool);
 	if (!ptrans)
 		return NULL;
 
-	/* util_slab_alloc() doesn't zero: */
+	/* slab_alloc_st() doesn't zero: */
 	trans = fd_transfer(ptrans);
 	memset(trans, 0, sizeof(*trans));
 
@@ -898,14 +898,17 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 
 	util_range_init(&rsc->valid_buffer_range);
 
-	rsc->bo = fd_screen_bo_from_handle(pscreen, handle, &slice->pitch);
+	rsc->bo = fd_screen_bo_from_handle(pscreen, handle);
 	if (!rsc->bo)
 		goto fail;
 
 	rsc->base.vtbl = &fd_resource_vtbl;
 	rsc->cpp = util_format_get_blocksize(tmpl->format);
-	slice->pitch /= rsc->cpp;
+	slice->pitch = handle->stride / rsc->cpp;
 	slice->offset = handle->offset;
+
+	if ((slice->pitch < align(prsc->width0, 32)) || (slice->pitch % 32))
+		goto fail;
 
 	assert(rsc->cpp);
 

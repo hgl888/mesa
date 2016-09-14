@@ -22,7 +22,7 @@
  */
 
 #include "blorp_priv.h"
-#include "brw_device_info.h"
+#include "common/gen_device_info.h"
 #include "intel_aub.h"
 
 /**
@@ -60,7 +60,7 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
 static void
 blorp_alloc_binding_table(struct blorp_batch *batch, unsigned num_entries,
                           unsigned state_size, unsigned state_alignment,
-                          uint32_t *bt_offset, uint32_t **bt_map,
+                          uint32_t *bt_offset, uint32_t *surface_offsets,
                           void **surface_maps);
 static void
 blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
@@ -75,12 +75,9 @@ blorp_emit_3dstate_multisample(struct blorp_batch *batch, unsigned samples);
 
 #include "genxml/gen_macros.h"
 
-#define __gen_address_type struct blorp_address
-#define __gen_user_data struct blorp_batch
-
 static uint64_t
-__gen_combine_address(struct blorp_batch *batch, void *location,
-                      struct blorp_address address, uint32_t delta)
+_blorp_combine_address(struct blorp_batch *batch, void *location,
+                       struct blorp_address address, uint32_t delta)
 {
    if (address.buffer == NULL) {
       return address.offset + delta;
@@ -88,6 +85,10 @@ __gen_combine_address(struct blorp_batch *batch, void *location,
       return blorp_emit_reloc(batch, location, address, delta);
    }
 }
+
+#define __gen_address_type struct blorp_address
+#define __gen_user_data struct blorp_batch
+#define __gen_combine_address _blorp_combine_address
 
 #include "genxml/genX_pack.h"
 
@@ -293,8 +294,10 @@ blorp_emit_vertex_elements(struct blorp_batch *batch,
     * the URB. This is controlled by the 3DSTATE_VERTEX_BUFFERS and
     * 3DSTATE_VERTEX_ELEMENTS packets below. The VUE contents are as follows:
     *   dw0: Reserved, MBZ.
-    *   dw1: Render Target Array Index. The HiZ op does not use indexed
-    *        vertices, so set the dword to 0.
+    *   dw1: Render Target Array Index. Below vertex fetcher gets programmed
+    *        to assign this with primitive instance identifier which will be
+    *        used for layered clears. All other renders have only one instance
+    *        and therefore the value will be effectively zero.
     *   dw2: Viewport Index. The HiZ op disables viewport mapping and
     *        scissoring, so set the dword to 0.
     *   dw3: Point Width: The HiZ op does not emit the POINTLIST primitive,
@@ -313,7 +316,7 @@ blorp_emit_vertex_elements(struct blorp_batch *batch,
     * "Vertex URB Entry (VUE) Formats".
     *
     * Only vertex position X and Y are going to be variable, Z is fixed to
-    * zero and W to one. Header words dw0-3 are all zero. There is no need to
+    * zero and W to one. Header words dw0,2,3 are zero. There is no need to
     * include the fixed values in the vertex buffer. Vertex fetcher can be
     * instructed to fill vertex elements with constant values of one and zero
     * instead of reading them from the buffer.
@@ -327,7 +330,16 @@ blorp_emit_vertex_elements(struct blorp_batch *batch,
    ve[0].SourceElementFormat = ISL_FORMAT_R32G32B32A32_FLOAT;
    ve[0].SourceElementOffset = 0;
    ve[0].Component0Control = VFCOMP_STORE_0;
+
+   /* From Gen8 onwards hardware is no more instructed to overwrite components
+    * using an element specifier. Instead one has separate 3DSTATE_VF_SGVS
+    * (System Generated Value Setup) state packet for it.
+    */
+#if GEN_GEN >= 8
    ve[0].Component1Control = VFCOMP_STORE_0;
+#else
+   ve[0].Component1Control = VFCOMP_STORE_IID;
+#endif
    ve[0].Component2Control = VFCOMP_STORE_0;
    ve[0].Component3Control = VFCOMP_STORE_0;
 
@@ -361,7 +373,14 @@ blorp_emit_vertex_elements(struct blorp_batch *batch,
    }
 
 #if GEN_GEN >= 8
-   blorp_emit(batch, GENX(3DSTATE_VF_SGVS), sgvs);
+   /* Overwrite Render Target Array Index (2nd dword) in the VUE header with
+    * primitive instance identifier. This is used for layered clears.
+    */
+   blorp_emit(batch, GENX(3DSTATE_VF_SGVS), sgvs) {
+      sgvs.InstanceIDEnable = true;
+      sgvs.InstanceIDComponentNumber = COMP_1;
+      sgvs.InstanceIDElementOffset = 0;
+   }
 
    for (unsigned i = 0; i < num_elements; i++) {
       blorp_emit(batch, GENX(3DSTATE_VF_INSTANCING), vf) {
@@ -908,9 +927,7 @@ blorp_emit_surface_state(struct blorp_batch *batch,
    isl_surf_fill_state(batch->blorp->isl_dev, state,
                        .surf = &surf, .view = &surface->view,
                        .aux_surf = &surface->aux_surf, .aux_usage = aux_usage,
-                       .mocs = mocs, .clear_color = surface->clear_color,
-                       .x_offset_sa = surface->tile_x_sa,
-                       .y_offset_sa = surface->tile_y_sa);
+                       .mocs = mocs, .clear_color = surface->clear_color);
 
    blorp_surface_reloc(batch, state_offset + ss_info.reloc_dw * 4,
                        surface->addr, 0);
@@ -930,7 +947,7 @@ static void
 blorp_emit_surface_states(struct blorp_batch *batch,
                           const struct blorp_params *params)
 {
-   uint32_t bind_offset, *bind_map;
+   uint32_t bind_offset, surface_offsets[2];
    void *surface_maps[2];
 
    const unsigned ss_size = GENX(RENDER_SURFACE_STATE_length) * 4;
@@ -938,15 +955,15 @@ blorp_emit_surface_states(struct blorp_batch *batch,
 
    unsigned num_surfaces = 1 + (params->src.addr.buffer != NULL);
    blorp_alloc_binding_table(batch, num_surfaces, ss_size, ss_align,
-                             &bind_offset, &bind_map, surface_maps);
+                             &bind_offset, surface_offsets, surface_maps);
 
    blorp_emit_surface_state(batch, &params->dst,
                             surface_maps[BLORP_RENDERBUFFER_BT_INDEX],
-                            bind_map[BLORP_RENDERBUFFER_BT_INDEX], true);
+                            surface_offsets[BLORP_RENDERBUFFER_BT_INDEX], true);
    if (params->src.addr.buffer) {
       blorp_emit_surface_state(batch, &params->src,
                                surface_maps[BLORP_TEXTURE_BT_INDEX],
-                               bind_map[BLORP_TEXTURE_BT_INDEX], false);
+                               surface_offsets[BLORP_TEXTURE_BT_INDEX], false);
    }
 
 #if GEN_GEN >= 7

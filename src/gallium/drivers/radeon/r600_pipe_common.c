@@ -431,9 +431,8 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 			      struct r600_common_screen *rscreen,
 			      unsigned context_flags)
 {
-	util_slab_create(&rctx->pool_transfers,
-			 sizeof(struct r600_transfer), 64,
-			 UTIL_SLAB_SINGLETHREADED);
+	slab_create(&rctx->pool_transfers,
+			 sizeof(struct r600_transfer), 64);
 
 	rctx->screen = rscreen;
 	rctx->ws = rscreen->ws;
@@ -533,7 +532,7 @@ void r600_common_context_cleanup(struct r600_common_context *rctx)
 		u_upload_destroy(rctx->uploader);
 	}
 
-	util_slab_destroy(&rctx->pool_transfers);
+	slab_destroy(&rctx->pool_transfers);
 
 	if (rctx->allocator_zeroed_memory) {
 		u_suballocator_destroy(rctx->allocator_zeroed_memory);
@@ -1070,18 +1069,20 @@ static void r600_query_memory_info(struct pipe_screen *screen,
 
 	info->device_memory_evicted =
 		ws->query_value(ws, RADEON_NUM_BYTES_MOVED) / 1024;
-	/* Just return the number of evicted 64KB pages. */
-	info->nr_device_memory_evictions = info->device_memory_evicted / 64;
+
+	if (rscreen->info.drm_major == 3 && rscreen->info.drm_minor >= 4)
+		info->nr_device_memory_evictions =
+			ws->query_value(ws, RADEON_NUM_EVICTIONS);
+	else
+		/* Just return the number of evicted 64KB pages. */
+		info->nr_device_memory_evictions = info->device_memory_evicted / 64;
 }
 
 struct pipe_resource *r600_resource_create_common(struct pipe_screen *screen,
 						  const struct pipe_resource *templ)
 {
-	struct r600_common_screen *rscreen = (struct r600_common_screen*)screen;
-
 	if (templ->target == PIPE_BUFFER) {
-		return r600_buffer_create(screen, templ,
-					  rscreen->info.gart_page_size);
+		return r600_buffer_create(screen, templ, 256);
 	} else {
 		return r600_texture_create(screen, templ);
 	}

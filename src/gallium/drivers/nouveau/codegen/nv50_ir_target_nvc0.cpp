@@ -615,13 +615,29 @@ bool TargetNVC0::canDualIssue(const Instruction *a, const Instruction *b) const
       // not if the 2nd instruction isn't necessarily executed
       if (clA == OPCLASS_TEXTURE || clA == OPCLASS_FLOW)
          return false;
+
+      // Check that a and b don't write to the same sources, nor that b reads
+      // anything that a writes.
+      if (!a->canCommuteDefDef(b) || !a->canCommuteDefSrc(b))
+         return false;
+
       // anything with MOV
       if (a->op == OP_MOV || b->op == OP_MOV)
          return true;
       if (clA == clB) {
-         // only F32 arith or integer additions
-         if (clA != OPCLASS_ARITH)
+         switch (clA) {
+         // there might be more
+         case OPCLASS_COMPARE:
+            if ((a->op == OP_MIN || a->op == OP_MAX) &&
+                (b->op == OP_MIN || b->op == OP_MAX))
+               break;
             return false;
+         case OPCLASS_ARITH:
+            break;
+         default:
+            return false;
+         }
+         // only F32 arith or integer additions
          return (a->dType == TYPE_F32 || a->op == OP_ADD ||
                  b->dType == TYPE_F32 || b->op == OP_ADD);
       }

@@ -26,9 +26,8 @@
 #include "linker.h"
 #include "ir_uniform.h"
 #include "glsl_symbol_table.h"
-#include "program/hash_table.h"
 #include "program.h"
-#include "util/hash_table.h"
+#include "util/string_to_uint_map.h"
 
 /**
  * \file link_uniforms.cpp

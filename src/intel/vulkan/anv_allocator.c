@@ -865,15 +865,17 @@ anv_bo_pool_free(struct anv_bo_pool *pool, const struct anv_bo *bo_in)
 {
    /* Make a copy in case the anv_bo happens to be storred in the BO */
    struct anv_bo bo = *bo_in;
+
+   VG(VALGRIND_MEMPOOL_FREE(pool, bo.map));
+
    struct bo_pool_bo_link *link = bo.map;
-   link->bo = bo;
+   VG_NOACCESS_WRITE(&link->bo, bo);
 
    assert(util_is_power_of_two(bo.size));
    const unsigned size_log2 = ilog2_round_up(bo.size);
    const unsigned bucket = size_log2 - 12;
    assert(bucket < ARRAY_SIZE(pool->free_list));
 
-   VG(VALGRIND_MEMPOOL_FREE(pool, bo.map));
    anv_ptr_free_list_push(&pool->free_list[bucket], link);
 }
 
@@ -922,7 +924,7 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
    if (size == 0) {
       /* We own the lock.  Allocate a buffer */
 
-      struct brw_device_info *devinfo = &device->info;
+      struct gen_device_info *devinfo = &device->info;
       uint32_t max_threads[] = {
          [MESA_SHADER_VERTEX]                  = devinfo->max_vs_threads,
          [MESA_SHADER_TESS_CTRL]               = devinfo->max_hs_threads,

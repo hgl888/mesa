@@ -748,10 +748,9 @@ static void si_shader_ps(struct si_shader *shader)
 	si_pm4_set_reg(pm4, R_0286D8_SPI_PS_IN_CONTROL, spi_ps_in_control);
 
 	si_pm4_set_reg(pm4, R_028710_SPI_SHADER_Z_FORMAT,
-		       info->writes_samplemask ? V_028710_SPI_SHADER_32_ABGR :
-		       info->writes_stencil ? V_028710_SPI_SHADER_32_GR :
-		       info->writes_z ? V_028710_SPI_SHADER_32_R :
-		       V_028710_SPI_SHADER_ZERO);
+		       si_get_spi_shader_z_format(info->writes_z,
+						  info->writes_stencil,
+						  info->writes_samplemask));
 
 	si_pm4_set_reg(pm4, R_028714_SPI_SHADER_COL_FORMAT, spi_shader_col_format);
 	si_pm4_set_reg(pm4, R_02823C_CB_SHADER_MASK, cb_shader_mask);
@@ -1608,6 +1607,12 @@ static void si_init_config_add_vgt_flush(struct si_context *sctx)
 {
 	if (sctx->init_config_has_vgt_flush)
 		return;
+
+	/* Done by Vulkan before VGT_FLUSH. */
+	si_pm4_cmd_begin(sctx->init_config, PKT3_EVENT_WRITE);
+	si_pm4_cmd_add(sctx->init_config,
+		       EVENT_TYPE(V_028A90_VS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+	si_pm4_cmd_end(sctx->init_config, false);
 
 	/* VGT_FLUSH is required even if VGT is idle. It resets VGT pointers. */
 	si_pm4_cmd_begin(sctx->init_config, PKT3_EVENT_WRITE);

@@ -84,10 +84,8 @@ nvc0_screen_is_format_supported(struct pipe_screen *pscreen,
        nouveau_screen(pscreen)->class_3d != NVEA_3D_CLASS)
       return false;
 
-   /* transfers & shared are always supported */
-   bindings &= ~(PIPE_BIND_TRANSFER_READ |
-                 PIPE_BIND_TRANSFER_WRITE |
-                 PIPE_BIND_LINEAR |
+   /* shared is always supported */
+   bindings &= ~(PIPE_BIND_LINEAR |
                  PIPE_BIND_SHARED);
 
    if (bindings & PIPE_BIND_SHADER_IMAGE && sample_count > 1 &&
@@ -351,7 +349,6 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
    case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
       return shader != PIPE_SHADER_FRAGMENT;
    case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
-      return shader != PIPE_SHADER_FRAGMENT || class_3d < GM107_3D_CLASS;
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       return 1;
@@ -701,6 +698,42 @@ nvc0_screen_resize_tls_area(struct nvc0_screen *screen,
    return 0;
 }
 
+int
+nvc0_screen_resize_text_area(struct nvc0_screen *screen, uint64_t size)
+{
+   struct nouveau_pushbuf *push = screen->base.pushbuf;
+   struct nouveau_bo *bo;
+   int ret;
+
+   ret = nouveau_bo_new(screen->base.device, NV_VRAM_DOMAIN(&screen->base),
+                        1 << 17, size, NULL, &bo);
+   if (ret)
+      return ret;
+
+   nouveau_bo_ref(NULL, &screen->text);
+   screen->text = bo;
+
+   nouveau_heap_destroy(&screen->lib_code);
+   nouveau_heap_destroy(&screen->text_heap);
+
+   /* XXX: getting a page fault at the end of the code buffer every few
+    *  launches, don't use the last 256 bytes to work around them - prefetch ?
+    */
+   nouveau_heap_init(&screen->text_heap, 0, size - 0x100);
+
+   /* update the code segment setup */
+   BEGIN_NVC0(push, NVC0_3D(CODE_ADDRESS_HIGH), 2);
+   PUSH_DATAh(push, screen->text->offset);
+   PUSH_DATA (push, screen->text->offset);
+   if (screen->compute) {
+      BEGIN_NVC0(push, NVC0_CP(CODE_ADDRESS_HIGH), 2);
+      PUSH_DATAh(push, screen->text->offset);
+      PUSH_DATA (push, screen->text->offset);
+   }
+
+   return 0;
+}
+
 #define FAIL_SCREEN_INIT(str, err)                    \
    do {                                               \
       NOUVEAU_ERR(str, err);                          \
@@ -951,15 +984,9 @@ nvc0_screen_create(struct nouveau_device *dev)
 
    nvc0_magic_3d_init(push, screen->eng3d->oclass);
 
-   ret = nouveau_bo_new(dev, NV_VRAM_DOMAIN(&screen->base), 1 << 17, 1 << 20, NULL,
-                        &screen->text);
+   ret = nvc0_screen_resize_text_area(screen, 1 << 19);
    if (ret)
       FAIL_SCREEN_INIT("Error allocating TEXT area: %d\n", ret);
-
-   /* XXX: getting a page fault at the end of the code buffer every few
-    *  launches, don't use the last 256 bytes to work around them - prefetch ?
-    */
-   nouveau_heap_init(&screen->text_heap, 0, (1 << 20) - 0x100);
 
    ret = nouveau_bo_new(dev, NV_VRAM_DOMAIN(&screen->base), 1 << 12, 7 << 16, NULL,
                         &screen->uniform_bo);
@@ -1044,9 +1071,6 @@ nvc0_screen_create(struct nouveau_device *dev)
    if (ret)
       FAIL_SCREEN_INIT("Error allocating TLS area: %d\n", ret);
 
-   BEGIN_NVC0(push, NVC0_3D(CODE_ADDRESS_HIGH), 2);
-   PUSH_DATAh(push, screen->text->offset);
-   PUSH_DATA (push, screen->text->offset);
    BEGIN_NVC0(push, NVC0_3D(TEMP_ADDRESS_HIGH), 4);
    PUSH_DATAh(push, screen->tls->offset);
    PUSH_DATA (push, screen->tls->offset);

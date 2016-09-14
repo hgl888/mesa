@@ -26,7 +26,7 @@
 #include <assert.h>
 #include <strings.h>
 
-#include "brw_device_info.h"
+#include "common/gen_device_info.h"
 #include "util/macros.h"
 
 #include "isl.h"
@@ -96,6 +96,15 @@ isl_log2u(uint32_t n)
 {
    assert(n != 0);
    return 31 - __builtin_clz(n);
+}
+
+static inline uint32_t
+isl_round_up_to_power_of_two(uint32_t value)
+{
+   if (value <= 1)
+      return value;
+
+   return 1 << (32 - __builtin_clz(value - 1));
 }
 
 static inline uint32_t

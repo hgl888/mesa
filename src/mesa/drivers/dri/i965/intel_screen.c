@@ -1300,7 +1300,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
    static const uint8_t multisample_samples[2]  = {4, 8};
 
    struct intel_screen *screen = dri_screen->driverPrivate;
-   const struct brw_device_info *devinfo = screen->devinfo;
+   const struct gen_device_info *devinfo = screen->devinfo;
    uint8_t depth_bits[4], stencil_bits[4];
    __DRIconfig **configs = NULL;
 
@@ -1563,7 +1563,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
        return false;
 
    intelScreen->deviceID = drm_intel_bufmgr_gem_get_devid(intelScreen->bufmgr);
-   intelScreen->devinfo = brw_get_device_info(intelScreen->deviceID);
+   intelScreen->devinfo = gen_get_device_info(intelScreen->deviceID);
    if (!intelScreen->devinfo)
       return false;
 

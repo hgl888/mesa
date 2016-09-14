@@ -131,7 +131,6 @@ extern const struct brw_tracked_state gen6_vs_state;
 extern const struct brw_tracked_state gen6_wm_push_constants;
 extern const struct brw_tracked_state gen6_wm_state;
 extern const struct brw_tracked_state gen7_depthbuffer;
-extern const struct brw_tracked_state gen7_clip_state;
 extern const struct brw_tracked_state gen7_ds_state;
 extern const struct brw_tracked_state gen7_gs_state;
 extern const struct brw_tracked_state gen7_tcs_push_constants;
@@ -289,7 +288,7 @@ void brw_update_texture_surface(struct gl_context *ctx,
 
 uint32_t brw_update_renderbuffer_surface(struct brw_context *brw,
                                          struct gl_renderbuffer *rb,
-                                         bool layered, unsigned unit,
+                                         uint32_t flags, unsigned unit,
                                          uint32_t surf_index);
 
 void brw_update_renderbuffer_surfaces(struct brw_context *brw,

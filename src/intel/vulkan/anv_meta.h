@@ -47,15 +47,6 @@ struct anv_meta_saved_state {
 VkResult anv_device_init_meta_clear_state(struct anv_device *device);
 void anv_device_finish_meta_clear_state(struct anv_device *device);
 
-VkResult anv_device_init_meta_resolve_state(struct anv_device *device);
-void anv_device_finish_meta_resolve_state(struct anv_device *device);
-
-VkResult anv_device_init_meta_blit_state(struct anv_device *device);
-void anv_device_finish_meta_blit_state(struct anv_device *device);
-
-VkResult anv_device_init_meta_blit2d_state(struct anv_device *device);
-void anv_device_finish_meta_blit2d_state(struct anv_device *device);
-
 void
 anv_meta_save(struct anv_meta_saved_state *state,
               const struct anv_cmd_buffer *cmd_buffer,
@@ -72,41 +63,6 @@ uint32_t
 anv_meta_get_iview_layer(const struct anv_image *dest_image,
                          const VkImageSubresourceLayers *dest_subresource,
                          const VkOffset3D *dest_offset);
-
-struct anv_meta_blit2d_surf {
-   struct anv_bo *bo;
-   enum isl_tiling tiling;
-
-   /** Base offset to the start of the image */
-   uint64_t base_offset;
-
-   /** The size of an element in bytes. */
-   uint8_t bs;
-
-   /** Pitch between rows in bytes. */
-   uint32_t pitch;
-};
-
-struct anv_meta_blit2d_rect {
-   uint32_t src_x, src_y;
-   uint32_t dst_x, dst_y;
-   uint32_t width, height;
-};
-
-void
-anv_meta_begin_blit2d(struct anv_cmd_buffer *cmd_buffer,
-                      struct anv_meta_saved_state *save);
-
-void
-anv_meta_blit2d(struct anv_cmd_buffer *cmd_buffer,
-                struct anv_meta_blit2d_surf *src,
-                struct anv_meta_blit2d_surf *dst,
-                unsigned num_rects,
-                struct anv_meta_blit2d_rect *rects);
-
-void
-anv_meta_end_blit2d(struct anv_cmd_buffer *cmd_buffer,
-                    struct anv_meta_saved_state *save);
 
 #ifdef __cplusplus
 }

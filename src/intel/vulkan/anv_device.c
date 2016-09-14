@@ -76,8 +76,8 @@ anv_physical_device_init(struct anv_physical_device *device,
       goto fail;
    }
 
-   device->name = brw_get_device_name(device->chipset_id);
-   device->info = brw_get_device_info(device->chipset_id);
+   device->name = gen_get_device_name(device->chipset_id);
+   device->info = gen_get_device_info(device->chipset_id);
    if (!device->info) {
       result = vk_error(VK_ERROR_INCOMPATIBLE_DRIVER);
       goto fail;
@@ -438,7 +438,7 @@ void anv_GetPhysicalDeviceProperties(
     VkPhysicalDeviceProperties*                 pProperties)
 {
    ANV_FROM_HANDLE(anv_physical_device, pdevice, physicalDevice);
-   const struct brw_device_info *devinfo = pdevice->info;
+   const struct gen_device_info *devinfo = pdevice->info;
 
    const float time_stamp_base = devinfo->gen >= 9 ? 83.333 : 80.0;
 
@@ -918,6 +918,8 @@ VkResult anv_CreateDevice(
    if (result != VK_SUCCESS)
       goto fail_fd;
 
+   anv_device_init_blorp(device);
+
    anv_device_init_border_colors(device);
 
    *pDevice = anv_device_to_handle(device);
@@ -939,6 +941,8 @@ void anv_DestroyDevice(
    ANV_FROM_HANDLE(anv_device, device, _device);
 
    anv_queue_finish(&device->queue);
+
+   anv_device_finish_blorp(device);
 
    anv_device_finish_meta(device);
 

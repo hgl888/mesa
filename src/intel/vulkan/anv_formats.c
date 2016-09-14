@@ -24,13 +24,6 @@
 #include "anv_private.h"
 #include "vk_format_info.h"
 
-#define ISL_SWIZZLE(r, g, b, a) { \
-   ISL_CHANNEL_SELECT_##r, \
-   ISL_CHANNEL_SELECT_##g, \
-   ISL_CHANNEL_SELECT_##b, \
-   ISL_CHANNEL_SELECT_##a, \
-}
-
 #define RGBA ISL_SWIZZLE(RED, GREEN, BLUE, ALPHA)
 #define BGRA ISL_SWIZZLE(BLUE, GREEN, RED, ALPHA)
 #define RGB1 ISL_SWIZZLE(RED, GREEN, BLUE, ONE)
@@ -245,7 +238,7 @@ static const struct anv_format anv_formats[] = {
  * Exactly one bit must be set in \a aspect.
  */
 struct anv_format
-anv_get_format(const struct brw_device_info *devinfo, VkFormat vk_format,
+anv_get_format(const struct gen_device_info *devinfo, VkFormat vk_format,
                VkImageAspectFlags aspect, VkImageTiling tiling)
 {
    struct anv_format format = anv_formats[vk_format];
@@ -283,7 +276,7 @@ anv_get_format(const struct brw_device_info *devinfo, VkFormat vk_format,
          format.isl_format = rgbx;
       } else {
          format.isl_format = isl_format_rgb_to_rgba(format.isl_format);
-         format.swizzle = (struct anv_format_swizzle) RGB1;
+         format.swizzle = RGB1;
       }
    }
 
@@ -303,7 +296,7 @@ anv_get_format(const struct brw_device_info *devinfo, VkFormat vk_format,
 // Format capabilities
 
 static VkFormatFeatureFlags
-get_image_format_properties(const struct brw_device_info *devinfo,
+get_image_format_properties(const struct gen_device_info *devinfo,
                             enum isl_format base, struct anv_format format)
 {
    if (format.isl_format == ISL_FORMAT_UNSUPPORTED)
@@ -344,7 +337,7 @@ get_image_format_properties(const struct brw_device_info *devinfo,
 }
 
 static VkFormatFeatureFlags
-get_buffer_format_properties(const struct brw_device_info *devinfo,
+get_buffer_format_properties(const struct gen_device_info *devinfo,
                              enum isl_format format)
 {
    if (format == ISL_FORMAT_UNSUPPORTED)

@@ -733,6 +733,7 @@ static void *si_create_rs_state(struct pipe_context *ctx,
 	}
 
 	rs->scissor_enable = state->scissor;
+	rs->clip_halfz = state->clip_halfz;
 	rs->two_side = state->light_twoside;
 	rs->multisample_enable = state->multisample;
 	rs->force_persample_interp = state->force_persample_interp;
@@ -872,7 +873,7 @@ static void si_bind_rs_state(struct pipe_context *ctx, void *state)
 			si_mark_atom_dirty(sctx, &sctx->msaa_sample_locs.atom);
 	}
 
-	r600_set_scissor_enable(&sctx->b, rs->scissor_enable);
+	r600_viewport_set_rast_deps(&sctx->b, rs->scissor_enable, rs->clip_halfz);
 
 	si_pm4_bind_state(sctx, rasterizer, rs);
 	si_update_poly_offset_state(sctx);
@@ -1610,6 +1611,10 @@ static unsigned si_tex_dim(unsigned res_target, unsigned view_target,
 	if (view_target == PIPE_TEXTURE_CUBE ||
 	    view_target == PIPE_TEXTURE_CUBE_ARRAY)
 		res_target = view_target;
+	/* If interpreting cubemaps as something else, set 2D_ARRAY. */
+	else if (res_target == PIPE_TEXTURE_CUBE ||
+		 res_target == PIPE_TEXTURE_CUBE_ARRAY)
+		res_target = PIPE_TEXTURE_2D_ARRAY;
 
 	switch (res_target) {
 	default:
@@ -1850,11 +1855,6 @@ static boolean si_is_format_supported(struct pipe_screen *screen,
 	    si_is_vertex_format_supported(screen, format)) {
 		retval |= PIPE_BIND_VERTEX_BUFFER;
 	}
-
-	if (usage & PIPE_BIND_TRANSFER_READ)
-		retval |= PIPE_BIND_TRANSFER_READ;
-	if (usage & PIPE_BIND_TRANSFER_WRITE)
-		retval |= PIPE_BIND_TRANSFER_WRITE;
 
 	if ((usage & PIPE_BIND_LINEAR) &&
 	    !util_format_is_compressed(format) &&
@@ -2826,7 +2826,8 @@ si_make_texture_descriptor(struct si_screen *screen,
 	state[1] = (S_008F14_DATA_FORMAT(data_format) |
 		    S_008F14_NUM_FORMAT(num_format));
 	state[2] = (S_008F18_WIDTH(width - 1) |
-		    S_008F18_HEIGHT(height - 1));
+		    S_008F18_HEIGHT(height - 1) |
+		    S_008F18_PERF_MOD(4));
 	state[3] = (S_008F1C_DST_SEL_X(si_map_swizzle(swizzle[0])) |
 		    S_008F1C_DST_SEL_Y(si_map_swizzle(swizzle[1])) |
 		    S_008F1C_DST_SEL_Z(si_map_swizzle(swizzle[2])) |
@@ -3046,6 +3047,10 @@ si_create_sampler_view_custom(struct pipe_context *ctx,
 		}
 	}
 
+	vi_dcc_disable_if_incompatible_format(&sctx->b, texture,
+					      state->u.tex.first_level,
+					      state->format);
+
 	si_make_texture_descriptor(sctx->screen, tmp, true,
 				   state->target, pipe_format, state_swizzle,
 				   first_level, last_level,
@@ -3172,10 +3177,13 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
 			  S_008F30_MAX_ANISO_RATIO(max_aniso_ratio) |
 			  S_008F30_DEPTH_COMPARE_FUNC(si_tex_compare(state->compare_func)) |
 			  S_008F30_FORCE_UNNORMALIZED(!state->normalized_coords) |
+			  S_008F30_ANISO_THRESHOLD(max_aniso_ratio >> 1) |
+			  S_008F30_ANISO_BIAS(max_aniso_ratio) |
 			  S_008F30_DISABLE_CUBE_WRAP(!state->seamless_cube_map) |
 			  S_008F30_COMPAT_MODE(sctx->b.chip_class >= VI));
 	rstate->val[1] = (S_008F34_MIN_LOD(S_FIXED(CLAMP(state->min_lod, 0, 15), 8)) |
-			  S_008F34_MAX_LOD(S_FIXED(CLAMP(state->max_lod, 0, 15), 8)));
+			  S_008F34_MAX_LOD(S_FIXED(CLAMP(state->max_lod, 0, 15), 8)) |
+			  S_008F34_PERF_MIP(max_aniso_ratio ? max_aniso_ratio + 6 : 0));
 	rstate->val[2] = (S_008F38_LOD_BIAS(S_FIXED(CLAMP(state->lod_bias, -16, 16), 8)) |
 			  S_008F38_XY_MAG_FILTER(eg_tex_filter(state->mag_img_filter, max_aniso)) |
 			  S_008F38_XY_MIN_FILTER(eg_tex_filter(state->min_img_filter, max_aniso)) |
@@ -3433,7 +3441,6 @@ void si_init_state_functions(struct si_context *sctx)
 	si_init_external_atom(sctx, &sctx->b.scissors.atom, &sctx->atoms.s.scissors);
 	si_init_external_atom(sctx, &sctx->b.viewports.atom, &sctx->atoms.s.viewports);
 
-	si_init_atom(sctx, &sctx->cache_flush, &sctx->atoms.s.cache_flush, si_emit_cache_flush);
 	si_init_atom(sctx, &sctx->framebuffer.atom, &sctx->atoms.s.framebuffer, si_emit_framebuffer_state);
 	si_init_atom(sctx, &sctx->msaa_sample_locs.atom, &sctx->atoms.s.msaa_sample_locs, si_emit_msaa_sample_locs);
 	si_init_atom(sctx, &sctx->db_render_state, &sctx->atoms.s.db_render_state, si_emit_db_render_state);
@@ -3747,7 +3754,6 @@ static void si_init_config(struct si_context *sctx)
 	unsigned raster_config, raster_config_1;
 	uint64_t border_color_va = sctx->border_color_buffer->gpu_address;
 	struct si_pm4_state *pm4 = CALLOC_STRUCT(si_pm4_state);
-	int i;
 
 	if (!pm4)
 		return;
@@ -3778,11 +3784,6 @@ static void si_init_config(struct si_context *sctx)
 	si_pm4_set_reg(pm4, R_028BD8_PA_SC_CENTROID_PRIORITY_1, 0xfedcba98);
 
 	si_pm4_set_reg(pm4, R_02882C_PA_SU_PRIM_FILTER_CNTL, 0);
-
-	for (i = 0; i < 16; i++) {
-		si_pm4_set_reg(pm4, R_0282D0_PA_SC_VPORT_ZMIN_0 + i*8, 0);
-		si_pm4_set_reg(pm4, R_0282D4_PA_SC_VPORT_ZMAX_0 + i*8, fui(1.0));
-	}
 
 	switch (sctx->screen->b.family) {
 	case CHIP_TAHITI:

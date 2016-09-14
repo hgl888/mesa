@@ -112,11 +112,19 @@ struct brw_blorp_rect_grid
    float pad[2];
 };
 
+struct blorp_surf_offset {
+   uint32_t x;
+   uint32_t y;
+};
+
 struct brw_blorp_wm_inputs
 {
    struct brw_blorp_discard_rect discard_rect;
    struct brw_blorp_rect_grid rect_grid;
    struct brw_blorp_coord_transform coord_transform[2];
+
+   struct blorp_surf_offset src_offset;
+   struct blorp_surf_offset dst_offset;
 
    /* Minimum layer setting works for all the textures types but texture_3d
     * for which the setting has no effect. Use the z-coordinate instead.
@@ -124,7 +132,7 @@ struct brw_blorp_wm_inputs
    uint32_t src_z;
 
    /* Pad out to an integral number of registers */
-   uint32_t pad[3];
+   uint32_t pad[1];
 };
 
 struct brw_blorp_prog_data
@@ -237,6 +245,13 @@ struct brw_blorp_blit_prog_key
     */
    bool dst_tiled_w;
 
+   /* True if the destination is an RGB format.  If true, the surface state
+    * for the render target must be configured as red with three times the
+    * normal width.  We need to do this because you cannot render to
+    * non-power-of-two formats.
+    */
+   bool dst_rgb;
+
    /* True if all source samples should be blended together to produce each
     * destination pixel.  If true, src_tiled_w must be false, tex_samples must
     * equal src_samples, and tex_samples must be nonzero.
@@ -257,6 +272,16 @@ struct brw_blorp_blit_prog_key
 
    /* True for scaled blitting. */
    bool blit_scaled;
+
+   /* True if this blit operation may involve intratile offsets on the source.
+    * In this case, we need to add the offset before texturing.
+    */
+   bool need_src_offset;
+
+   /* True if this blit operation may involve intratile offsets on the
+    * destination.  In this case, we need to add the offset to gl_FragCoord.
+    */
+   bool need_dst_offset;
 
    /* Scale factors between the pixel grid and the grid of samples. We're
     * using grid of samples for bilinear filetring in multisample scaled blits.

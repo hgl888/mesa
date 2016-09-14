@@ -38,7 +38,7 @@
 
 /* This should be kept in sync with _eglInitThreadInfo() */
 #define _EGL_THREAD_INFO_INITIALIZER \
-   { EGL_SUCCESS, { NULL }, 0 }
+   { EGL_SUCCESS, NULL, 0 }
 
 /* a fallback thread info to guarantee that every thread always has one */
 static _EGLThreadInfo dummy_thread = _EGL_THREAD_INFO_INITIALIZER;
@@ -111,7 +111,7 @@ _eglInitThreadInfo(_EGLThreadInfo *t)
    memset(t, 0, sizeof(*t));
    t->LastError = EGL_SUCCESS;
    /* default, per EGL spec */
-   t->CurrentAPIIndex = _eglConvertApiToIndex(EGL_OPENGL_ES_API);
+   t->CurrentAPI = EGL_OPENGL_ES_API;
 }
 
 
@@ -205,24 +205,13 @@ _eglIsCurrentThreadDummy(void)
 
 
 /**
- * Return the currently bound context of the given API, or NULL.
- */
-_EGLContext *
-_eglGetAPIContext(EGLenum api)
-{
-   _EGLThreadInfo *t = _eglGetCurrentThread();
-   return t->CurrentContexts[_eglConvertApiToIndex(api)];
-}
-
-
-/**
  * Return the currently bound context of the current API, or NULL.
  */
 _EGLContext *
 _eglGetCurrentContext(void)
 {
    _EGLThreadInfo *t = _eglGetCurrentThread();
-   return t->CurrentContexts[t->CurrentAPIIndex];
+   return t->CurrentContext;
 }
 
 

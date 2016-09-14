@@ -48,7 +48,7 @@ __isl_finishme(const char *file, int line, const char *fmt, ...)
 
 void
 isl_device_init(struct isl_device *dev,
-                const struct brw_device_info *info,
+                const struct gen_device_info *info,
                 bool has_bit6_swizzling)
 {
    dev->info = info;
@@ -113,7 +113,16 @@ isl_tiling_get_info(const struct isl_device *dev,
    const uint32_t bs = format_bpb / 8;
    struct isl_extent2d logical_el, phys_B;
 
-   assert(tiling == ISL_TILING_LINEAR || isl_is_pow2(format_bpb));
+   if (tiling != ISL_TILING_LINEAR && !isl_is_pow2(format_bpb)) {
+      /* It is possible to have non-power-of-two formats in a tiled buffer.
+       * The easiest way to handle this is to treat the tile as if it is three
+       * times as wide.  This way no pixel will ever cross a tile boundary.
+       * This really only works on legacy X and Y tiling formats.
+       */
+      assert(tiling == ISL_TILING_X || tiling == ISL_TILING_Y0);
+      assert(bs % 3 == 0 && isl_is_pow2(format_bpb / 3));
+      return isl_tiling_get_info(dev, tiling, format_bpb / 3, tile_info);
+   }
 
    switch (tiling) {
    case ISL_TILING_LINEAR:
@@ -209,6 +218,7 @@ isl_tiling_get_info(const struct isl_device *dev,
 
    *tile_info = (struct isl_tile_info) {
       .tiling = tiling,
+      .format_bpb = format_bpb,
       .logical_extent_el = logical_el,
       .phys_extent_B = phys_B,
    };
@@ -286,9 +296,8 @@ isl_choose_msaa_layout(const struct isl_device *dev,
    }
 }
 
-static void
-isl_msaa_interleaved_scale_px_to_sa(uint32_t samples,
-                                    uint32_t *width, uint32_t *height)
+struct isl_extent2d
+isl_get_interleaved_msaa_px_size_sa(uint32_t samples)
 {
    assert(isl_is_pow2(samples));
 
@@ -300,10 +309,23 @@ isl_msaa_interleaved_scale_px_to_sa(uint32_t samples,
     *    MSFMT_DEPTH_STENCIL, W_L and H_L must be adjusted as follows before
     *    proceeding: [...]
     */
+   return (struct isl_extent2d) {
+      .width = 1 << ((ffs(samples) - 0) / 2),
+      .height = 1 << ((ffs(samples) - 1) / 2),
+   };
+}
+
+static void
+isl_msaa_interleaved_scale_px_to_sa(uint32_t samples,
+                                    uint32_t *width, uint32_t *height)
+{
+   const struct isl_extent2d px_size_sa =
+      isl_get_interleaved_msaa_px_size_sa(samples);
+
    if (width)
-      *width = isl_align(*width, 2) << ((ffs(samples) - 0) / 2);
+      *width = isl_align(*width, 2) * px_size_sa.width;
    if (height)
-      *height = isl_align(*height, 2) << ((ffs(samples) - 1) / 2);
+      *height = isl_align(*height, 2) * px_size_sa.width;
 }
 
 static enum isl_array_pitch_span
@@ -1201,15 +1223,21 @@ isl_surf_init_s(const struct isl_device *dev,
             base_alignment = MAX(base_alignment, fmtl->bpb / 8);
          }
       }
+      base_alignment = isl_round_up_to_power_of_two(base_alignment);
    } else {
+      assert(fmtl->bpb % tile_info.format_bpb == 0);
+      const uint32_t tile_el_scale = fmtl->bpb / tile_info.format_bpb;
+
       assert(phys_slice0_sa.w % fmtl->bw == 0);
       const uint32_t total_w_el = phys_slice0_sa.width / fmtl->bw;
       const uint32_t total_w_tl =
-         isl_align_div(total_w_el, tile_info.logical_extent_el.width);
+         isl_align_div(total_w_el * tile_el_scale,
+                       tile_info.logical_extent_el.width);
 
       row_pitch = total_w_tl * tile_info.phys_extent_B.width;
       if (row_pitch < info->min_pitch) {
-         row_pitch = isl_align(info->min_pitch, tile_info.phys_extent_B.width);
+         row_pitch = isl_align_npot(info->min_pitch,
+                                    tile_info.phys_extent_B.width);
       }
 
       total_h_el += isl_align_div_npot(pad_bytes, row_pitch);
@@ -1328,7 +1356,8 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
    assert(surf->samples == 1 && surf->msaa_layout == ISL_MSAA_LAYOUT_NONE);
    assert(ISL_DEV_GEN(dev) >= 7);
 
-   assert(surf->dim == ISL_SURF_DIM_2D);
+   assert(ISL_DEV_GEN(dev) >= 8 || surf->dim == ISL_SURF_DIM_2D);
+
    assert(surf->logical_level0_px.depth == 1);
 
    /* TODO: More conditions where it can fail. */
@@ -1665,14 +1694,6 @@ isl_tiling_get_intratile_offset_el(const struct isl_device *dev,
                                    uint32_t *x_offset_el,
                                    uint32_t *y_offset_el)
 {
-   /* This function only really works for power-of-two surfaces.  In
-    * theory, we could make it work for non-power-of-two surfaces by going
-    * to the left until we find a block that is bs-aligned.  The Vulkan
-    * driver doesn't use non-power-of-two tiled surfaces so we'll leave
-    * this unimplemented for now.
-    */
-   assert(tiling == ISL_TILING_LINEAR || isl_is_pow2(bs));
-
    if (tiling == ISL_TILING_LINEAR) {
       *base_address_offset = total_y_offset_el * row_pitch +
                              total_x_offset_el * bs;
@@ -1681,8 +1702,24 @@ isl_tiling_get_intratile_offset_el(const struct isl_device *dev,
       return;
    }
 
+   const uint32_t bpb = bs * 8;
+
    struct isl_tile_info tile_info;
-   isl_tiling_get_info(dev, tiling, bs * 8, &tile_info);
+   isl_tiling_get_info(dev, tiling, bpb, &tile_info);
+
+   assert(row_pitch % tile_info.phys_extent_B.width == 0);
+
+   /* For non-power-of-two formats, we need the address to be both tile and
+    * element-aligned.  The easiest way to achieve this is to work with a tile
+    * that is three times as wide as the regular tile.
+    *
+    * The tile info returned by get_tile_info has a logical size that is an
+    * integer number of tile_info.format_bpb size elements.  To scale the
+    * tile, we scale up the physical width and then treat the logical tile
+    * size as if it has bpb size elements.
+    */
+   const uint32_t tile_el_scale = bpb / tile_info.format_bpb;
+   tile_info.phys_extent_B.width *= tile_el_scale;
 
    /* Compute the offset into the tile */
    *x_offset_el = total_x_offset_el % tile_info.logical_extent_el.w;
@@ -1692,7 +1729,6 @@ isl_tiling_get_intratile_offset_el(const struct isl_device *dev,
    uint32_t x_offset_tl = total_x_offset_el / tile_info.logical_extent_el.w;
    uint32_t y_offset_tl = total_y_offset_el / tile_info.logical_extent_el.h;
 
-   assert(row_pitch % tile_info.phys_extent_B.width == 0);
    *base_address_offset =
       y_offset_tl * tile_info.phys_extent_B.h * row_pitch +
       x_offset_tl * tile_info.phys_extent_B.h * tile_info.phys_extent_B.w;

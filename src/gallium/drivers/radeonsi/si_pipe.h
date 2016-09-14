@@ -219,6 +219,7 @@ struct si_context {
 	struct si_shader_ctx_state	fixed_func_tcs_shader;
 	LLVMTargetMachineRef		tm; /* only non-threaded compilation */
 	bool				gfx_flush_in_progress;
+	bool				compute_is_busy;
 
 	/* Atoms (direct states). */
 	union si_state_atoms		atoms;
@@ -228,7 +229,6 @@ struct si_context {
 	union si_state			emitted;
 
 	/* Atom declarations. */
-	struct r600_atom		cache_flush;
 	struct si_framebuffer		framebuffer;
 	struct si_sample_locs		msaa_sample_locs;
 	struct r600_atom		db_render_state;
@@ -306,6 +306,7 @@ struct si_context {
 	bool			occlusion_queries_disabled;
 
 	/* Emitted draw state. */
+	int			last_index_size;
 	int			last_base_vertex;
 	int			last_start_instance;
 	int			last_drawid;

@@ -44,15 +44,19 @@ void genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer);
 void genX(flush_pipeline_select_3d)(struct anv_cmd_buffer *cmd_buffer);
 void genX(flush_pipeline_select_gpgpu)(struct anv_cmd_buffer *cmd_buffer);
 
-void genX(setup_pipeline_l3_config)(struct anv_pipeline *pipeline);
-
 void genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
-                                const struct anv_pipeline *pipeline);
+                                const struct gen_l3_config *cfg);
 
 void genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer);
 void genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer);
 
 void genX(cmd_buffer_flush_compute_state)(struct anv_cmd_buffer *cmd_buffer);
+
+void
+genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
+                     VkShaderStageFlags active_stages,
+                     unsigned vs_entry_size, unsigned gs_entry_size,
+                     const struct gen_l3_config *l3_config);
 
 VkResult
 genX(graphics_pipeline_create)(VkDevice _device,
@@ -68,3 +72,6 @@ genX(compute_pipeline_create)(VkDevice _device,
                               const VkComputePipelineCreateInfo *pCreateInfo,
                               const VkAllocationCallbacks *alloc,
                               VkPipeline *pPipeline);
+
+void genX(blorp_exec)(struct blorp_batch *batch,
+                      const struct blorp_params *params);

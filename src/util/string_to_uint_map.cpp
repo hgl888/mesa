@@ -1,5 +1,5 @@
 /*
- * Copyright © 2008 Intel Corporation
+ * Copyright © 2011 Intel Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -22,46 +22,21 @@
  */
 
 /**
- * \file hash_table.c
- * \brief Implementation of a generic, opaque hash table data type.
+ * \file string_to_uint_map.cpp
+ * \brief Dumb wrapprs so that C code can create and destroy maps.
  *
  * \author Ian Romanick <ian.d.romanick@intel.com>
  */
+#include "string_to_uint_map.h"
 
-#include "main/imports.h"
-#include "util/simple_list.h"
-#include "hash_table.h"
-
-unsigned
-hash_table_string_hash(const void *key)
+extern "C" struct string_to_uint_map *
+string_to_uint_map_ctor()
 {
-    const char *str = (const char *) key;
-    unsigned hash = 5381;
-
-
-    while (*str != '\0') {
-        hash = (hash * 33) + *str;
-        str++;
-    }
-
-    return hash;
+   return new string_to_uint_map;
 }
 
-bool hash_table_string_compare(const void *a, const void *b)
+extern "C" void
+string_to_uint_map_dtor(struct string_to_uint_map *map)
 {
-   return strcmp(a, b) == 0;
-}
-
-
-unsigned
-hash_table_pointer_hash(const void *key)
-{
-   return (unsigned)((uintptr_t) key / sizeof(void *));
-}
-
-
-bool
-hash_table_pointer_compare(const void *key1, const void *key2)
-{
-   return key1 == key2;
+   delete map;
 }

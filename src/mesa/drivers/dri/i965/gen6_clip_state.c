@@ -43,9 +43,9 @@ brw_is_drawing_points(const struct brw_context *brw)
       return true;
    }
 
-   if (brw->geometry_program) {
-      /* BRW_NEW_GEOMETRY_PROGRAM */
-      return brw->geometry_program->OutputType == GL_POINTS;
+   if (brw->gs.prog_data) {
+      /* BRW_NEW_GS_PROG_DATA */
+      return brw->gs.prog_data->output_topology == _3DPRIM_POINTLIST;
    } else if (brw->tes.prog_data) {
       /* BRW_NEW_TES_PROG_DATA */
       return brw->tes.prog_data->output_topology ==
@@ -66,9 +66,9 @@ brw_is_drawing_lines(const struct brw_context *brw)
       return true;
    }
 
-   if (brw->geometry_program) {
-      /* BRW_NEW_GEOMETRY_PROGRAM */
-      return brw->geometry_program->OutputType == GL_LINE_STRIP;
+   if (brw->gs.prog_data) {
+      /* BRW_NEW_GS_PROG_DATA */
+      return brw->gs.prog_data->output_topology == _3DPRIM_LINESTRIP;
    } else if (brw->tes.prog_data) {
       /* BRW_NEW_TES_PROG_DATA */
       return brw->tes.prog_data->output_topology ==
@@ -230,6 +230,9 @@ upload_clip_state(struct brw_context *brw)
    else
       enable = GEN6_CLIP_ENABLE;
 
+   /* _NEW_POLYGON,
+    * BRW_NEW_GEOMETRY_PROGRAM | BRW_NEW_TES_PROG_DATA | BRW_NEW_PRIMITIVE
+    */
    if (!brw_is_drawing_points(brw) && !brw_is_drawing_lines(brw))
       dw2 |= GEN6_CLIP_XY_TEST;
 
@@ -255,32 +258,16 @@ const struct brw_tracked_state gen6_clip_state = {
    .dirty = {
       .mesa  = _NEW_BUFFERS |
                _NEW_LIGHT |
-               _NEW_TRANSFORM,
-      .brw   = BRW_NEW_BLORP |
-               BRW_NEW_CONTEXT |
-               BRW_NEW_FS_PROG_DATA |
-               BRW_NEW_GEOMETRY_PROGRAM |
-               BRW_NEW_META_IN_PROGRESS |
-               BRW_NEW_PRIMITIVE |
-               BRW_NEW_RASTERIZER_DISCARD |
-               BRW_NEW_VUE_MAP_GEOM_OUT,
-   },
-   .emit = upload_clip_state,
-};
-
-const struct brw_tracked_state gen7_clip_state = {
-   .dirty = {
-      .mesa  = _NEW_BUFFERS |
-               _NEW_LIGHT |
                _NEW_POLYGON |
                _NEW_TRANSFORM,
       .brw   = BRW_NEW_BLORP |
                BRW_NEW_CONTEXT |
                BRW_NEW_FS_PROG_DATA |
-               BRW_NEW_GEOMETRY_PROGRAM |
+               BRW_NEW_GS_PROG_DATA |
                BRW_NEW_META_IN_PROGRESS |
                BRW_NEW_PRIMITIVE |
                BRW_NEW_RASTERIZER_DISCARD |
+               BRW_NEW_TES_PROG_DATA |
                BRW_NEW_VUE_MAP_GEOM_OUT,
    },
    .emit = upload_clip_state,

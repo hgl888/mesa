@@ -226,6 +226,25 @@ dri3_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
    return NULL;
 }
 
+static int
+dri3_authenticate(_EGLDisplay *disp, uint32_t id)
+{
+#ifdef HAVE_WAYLAND_PLATFORM
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+
+   if (dri2_dpy->device_name) {
+      _eglLog(_EGL_WARNING,
+              "Wayland client render node authentication is unnecessary");
+      return 0;
+   }
+
+   _eglLog(_EGL_WARNING,
+           "Wayland client primary node authentication isn't supported");
+#endif
+
+   return -1;
+}
+
 /**
  * Called via eglCreateWindowSurface(), drv->API.CreateWindowSurface().
  */
@@ -419,7 +438,7 @@ dri3_get_dri_drawable(_EGLSurface *surf)
 }
 
 struct dri2_egl_display_vtbl dri3_x11_display_vtbl = {
-   .authenticate = NULL,
+   .authenticate = dri3_authenticate,
    .create_window_surface = dri3_create_window_surface,
    .create_pixmap_surface = dri3_create_pixmap_surface,
    .create_pbuffer_surface = dri3_create_pbuffer_surface,
@@ -436,29 +455,6 @@ struct dri2_egl_display_vtbl dri3_x11_display_vtbl = {
    .get_sync_values = dri3_get_sync_values,
    .get_dri_drawable = dri3_get_dri_drawable,
 };
-
-static char *
-dri3_get_device_name(int fd)
-{
-   char *ret = NULL;
-
-   ret = drmGetRenderDeviceNameFromFd(fd);
-   if (ret)
-      return ret;
-
-   /* For dri3, render node support is required for WL_bind_wayland_display.
-    * In order not to regress on older systems without kernel or libdrm
-    * support, fall back to dri2. User can override it with environment
-    * variable if they don't need to use that extension.
-    */
-   if (getenv("EGL_FORCE_DRI3") == NULL) {
-      _eglLog(_EGL_WARNING, "Render node support not available, falling back to dri2");
-      _eglLog(_EGL_WARNING, "If you want to force dri3, set EGL_FORCE_DRI3 environment variable");
-   } else
-      ret = loader_get_device_name_for_fd(fd);
-
-   return ret;
-}
 
 EGLBoolean
 dri3_x11_connect(struct dri2_egl_display *dri2_dpy)
@@ -539,11 +535,12 @@ dri3_x11_connect(struct dri2_egl_display *dri2_dpy)
       return EGL_FALSE;
    }
 
-   dri2_dpy->device_name = dri3_get_device_name(dri2_dpy->fd);
-   if (!dri2_dpy->device_name) {
-      close(dri2_dpy->fd);
-      return EGL_FALSE;
-   }
+#ifdef HAVE_WAYLAND_PLATFORM
+   /* Only try to get a render device name since dri3 doesn't provide a
+    * mechanism for authenticating client opened device node fds. If this
+    * fails then don't advertise the extension. */
+   dri2_dpy->device_name = drmGetRenderDeviceNameFromFd(dri2_dpy->fd);
+#endif
 
    return EGL_TRUE;
 }

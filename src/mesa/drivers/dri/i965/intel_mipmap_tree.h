@@ -709,11 +709,8 @@ intel_miptree_supports_lossless_compressed(struct brw_context *brw,
 
 bool
 intel_miptree_alloc_non_msrt_mcs(struct brw_context *brw,
-                                 struct intel_mipmap_tree *mt);
-
-void
-intel_miptree_prepare_mcs(struct brw_context *brw,
-                          struct intel_mipmap_tree *mt);
+                                 struct intel_mipmap_tree *mt,
+                                 bool is_lossless_compressed);
 
 enum {
    MIPTREE_LAYOUT_ACCELERATED_UPLOAD       = 1 << 0,
@@ -813,7 +810,7 @@ enum isl_surf_dim
 get_isl_surf_dim(GLenum target);
 
 enum isl_dim_layout
-get_isl_dim_layout(const struct brw_device_info *devinfo, uint32_t tiling,
+get_isl_dim_layout(const struct gen_device_info *devinfo, uint32_t tiling,
                    GLenum target);
 
 void

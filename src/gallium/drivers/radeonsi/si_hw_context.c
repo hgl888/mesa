@@ -115,7 +115,7 @@ void si_context_gfx_flush(void *context, unsigned flags,
 		ctx->b.flags |= SI_CONTEXT_INV_GLOBAL_L2 |
 				SI_CONTEXT_INV_VMEM_L1;
 
-	si_emit_cache_flush(ctx, NULL);
+	si_emit_cache_flush(ctx);
 
 	if (ctx->trace_buf)
 		si_trace_emit(ctx);
@@ -213,6 +213,7 @@ void si_begin_new_cs(struct si_context *ctx)
 
 	ctx->b.scissors.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
 	ctx->b.viewports.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
+	ctx->b.viewports.depth_range_dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
 	si_mark_atom_dirty(ctx, &ctx->b.scissors.atom);
 	si_mark_atom_dirty(ctx, &ctx->b.viewports.atom);
 
@@ -224,6 +225,7 @@ void si_begin_new_cs(struct si_context *ctx)
 	/* Invalidate various draw states so that they are emitted before
 	 * the first draw call. */
 	si_invalidate_draw_sh_constants(ctx);
+	ctx->last_index_size = -1;
 	ctx->last_primitive_restart_en = -1;
 	ctx->last_restart_index = SI_RESTART_INDEX_UNKNOWN;
 	ctx->last_gs_out_prim = -1;

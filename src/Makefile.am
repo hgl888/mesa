@@ -50,6 +50,10 @@ SUBDIRS = . gtest util mapi/glapi/gen mapi
 # include only conditionally ?
 SUBDIRS += compiler
 
+if HAVE_GALLIUM_RADEON_COMMON
+SUBDIRS += amd
+endif
+
 if HAVE_INTEL_DRIVERS
 SUBDIRS += intel
 endif
@@ -113,6 +117,5 @@ noinst_LTLIBRARIES = libglsl_util.la
 libglsl_util_la_SOURCES = \
 	mesa/main/extensions_table.c \
 	mesa/main/imports.c \
-	mesa/program/prog_hash_table.c \
 	mesa/program/symbol_table.c \
 	mesa/program/dummy_errors.c

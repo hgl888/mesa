@@ -366,7 +366,7 @@ static void r600_bind_rs_state(struct pipe_context *ctx, void *state)
 		r600_mark_atom_dirty(rctx, &rctx->clip_misc_state.atom);
 	}
 
-	r600_set_scissor_enable(&rctx->b, rs->scissor_enable);
+	r600_viewport_set_rast_deps(&rctx->b, rs->scissor_enable, rs->clip_halfz);
 
 	/* Re-emit PA_SC_LINE_STIPPLE. */
 	rctx->last_primitive_type = -1;
@@ -2782,12 +2782,11 @@ static void r600_invalidate_buffer(struct pipe_context *ctx, struct pipe_resourc
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
 	struct r600_resource *rbuffer = r600_resource(buf);
-	unsigned i, shader, mask, alignment = rbuffer->buf->alignment;
+	unsigned i, shader, mask;
 	struct r600_pipe_sampler_view *view;
 
 	/* Reallocate the buffer in the same pipe_resource. */
-	r600_init_resource(&rctx->screen->b, rbuffer, rbuffer->b.b.width0,
-			   alignment);
+	r600_alloc_resource(&rctx->screen->b, rbuffer);
 
 	/* We changed the buffer, now we need to bind it where the old one was bound. */
 	/* Vertex buffers. */

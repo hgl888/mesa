@@ -61,6 +61,9 @@
 #define OMX_VID_DEC_AVC_NAME "OMX.mesa.video_decoder.avc"
 #define OMX_VID_DEC_AVC_ROLE "video_decoder.avc"
 
+#define OMX_VID_DEC_HEVC_NAME "OMX.mesa.video_decoder.hevc"
+#define OMX_VID_DEC_HEVC_ROLE "video_decoder.hevc"
+
 #define OMX_VID_DEC_TIMESTAMP_INVALID ((OMX_TICKS) -1)
 
 struct vl_vlc;
@@ -94,11 +97,24 @@ DERIVEDCLASS(vid_dec_PrivateType, omx_base_filter_PrivateType)
          struct list_head dpb_list; \
          unsigned dpb_num; \
       } h264; \
+      struct { \
+         unsigned temporal_id; \
+         unsigned level_idc; \
+         bool IdrPicFlag; \
+         int slice_prev_poc; \
+         void *ref_pic_set_list; \
+         void *rps; \
+         struct pipe_h265_sps sps[16]; \
+         struct pipe_h265_pps pps[64]; \
+         struct list_head dpb_list; \
+         unsigned dpb_num; \
+      } h265; \
    } codec_data; \
    union { \
       struct pipe_picture_desc base; \
       struct pipe_mpeg12_picture_desc mpeg12; \
       struct pipe_h264_picture_desc h264; \
+      struct pipe_h265_picture_desc h265; \
    } picture; \
    unsigned num_in_buffers; \
    OMX_BUFFERHEADERTYPE *in_buffers[2]; \
@@ -125,5 +141,8 @@ void vid_dec_mpeg12_Init(vid_dec_PrivateType *priv);
 
 /* vid_dec_h264.c */
 void vid_dec_h264_Init(vid_dec_PrivateType *priv);
+
+/* vid_dec_h265.c */
+void vid_dec_h265_Init(vid_dec_PrivateType *priv);
 
 #endif

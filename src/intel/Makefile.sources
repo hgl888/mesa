@@ -6,6 +6,12 @@ BLORP_FILES = \
 	blorp/blorp_genX_exec.h \
 	blorp/blorp_priv.h
 
+COMMON_FILES = \
+	common/gen_device_info.c \
+	common/gen_device_info.h \
+	common/gen_l3_config.c \
+	common/gen_l3_config.h
+
 GENXML_GENERATED_FILES = \
 	genxml/gen4_pack.h \
 	genxml/gen45_pack.h \

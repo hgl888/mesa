@@ -464,9 +464,17 @@ static void si_launch_grid(
 
 	/* Add buffer sizes for memory checking in need_cs_space. */
 	r600_context_add_resource_size(ctx, &program->shader.bo->b.b);
-	if (info->indirect)
-		r600_context_add_resource_size(ctx, info->indirect);
 	/* TODO: add the scratch buffer */
+
+	if (info->indirect) {
+		r600_context_add_resource_size(ctx, info->indirect);
+
+		/* The hw doesn't read the indirect buffer via TC L2. */
+		if (r600_resource(info->indirect)->TC_L2_dirty) {
+			sctx->b.flags |= SI_CONTEXT_INV_GLOBAL_L2;
+			r600_resource(info->indirect)->TC_L2_dirty = false;
+		}
+	}
 
 	si_need_cs_space(sctx);
 
@@ -474,7 +482,7 @@ static void si_launch_grid(
 		si_initialize_compute(sctx);
 
 	if (sctx->b.flags)
-		si_emit_cache_flush(sctx, NULL);
+		si_emit_cache_flush(sctx);
 
 	if (!si_switch_compute_shader(sctx, program, &program->shader, info->pc))
 		return;
@@ -512,6 +520,7 @@ static void si_launch_grid(
 
 	si_ce_post_draw_synchronization(sctx);
 
+	sctx->compute_is_busy = true;
 	sctx->b.num_compute_calls++;
 	if (sctx->cs_shader_state.uses_scratch)
 		sctx->b.num_spill_compute_calls++;
