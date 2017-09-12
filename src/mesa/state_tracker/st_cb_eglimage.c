@@ -25,6 +25,7 @@
  *    Chia-I Wu <olv@lunarg.com>
  */
 
+#include "main/errors.h"
 #include "main/texobj.h"
 #include "main/teximage.h"
 #include "util/u_inlines.h"
@@ -35,6 +36,81 @@
 #include "st_texture.h"
 #include "st_format.h"
 #include "st_manager.h"
+#include "st_sampler_view.h"
+#include "util/u_surface.h"
+
+static bool
+is_format_supported(struct pipe_screen *screen, enum pipe_format format,
+                    unsigned nr_samples, unsigned usage)
+{
+   bool supported = screen->is_format_supported(screen, format, PIPE_TEXTURE_2D,
+                                                nr_samples, usage);
+
+   /* for sampling, some formats can be emulated.. it doesn't matter that
+    * the surface will have a format that the driver can't cope with because
+    * we'll give it sampler view formats that it can deal with and generate
+    * a shader variant that converts.
+    */
+   if ((usage == PIPE_BIND_SAMPLER_VIEW) && !supported) {
+      if (format == PIPE_FORMAT_IYUV) {
+         supported = screen->is_format_supported(screen, PIPE_FORMAT_R8_UNORM,
+                                                 PIPE_TEXTURE_2D, nr_samples,
+                                                 usage);
+      } else if (format == PIPE_FORMAT_NV12) {
+         supported = screen->is_format_supported(screen, PIPE_FORMAT_R8_UNORM,
+                                                 PIPE_TEXTURE_2D, nr_samples,
+                                                 usage) &&
+                     screen->is_format_supported(screen, PIPE_FORMAT_R8G8_UNORM,
+                                                 PIPE_TEXTURE_2D, nr_samples,
+                                                 usage);
+      }
+   }
+
+   return supported;
+}
+
+/**
+ * Return the surface of an EGLImage.
+ * FIXME: I think this should operate on resources, not surfaces
+ */
+static struct pipe_surface *
+st_egl_image_get_surface(struct gl_context *ctx, GLeglImageOES image_handle,
+                         unsigned usage, const char *error)
+{
+   struct st_context *st = st_context(ctx);
+   struct pipe_screen *screen = st->pipe->screen;
+   struct st_manager *smapi =
+      (struct st_manager *) st->iface.st_context_private;
+   struct st_egl_image stimg;
+   struct pipe_surface *ps, surf_tmpl;
+
+   if (!smapi || !smapi->get_egl_image)
+      return NULL;
+
+   memset(&stimg, 0, sizeof(stimg));
+   if (!smapi->get_egl_image(smapi, (void *) image_handle, &stimg)) {
+      /* image_handle does not refer to a valid EGL image object */
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s(image handle not found)", error);
+      return NULL;
+   }
+
+   if (!is_format_supported(screen, stimg.format, stimg.texture->nr_samples, usage)) {
+      /* unable to specify a texture object using the specified EGL image */
+      pipe_resource_reference(&stimg.texture, NULL);
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s(format not supported)", error);
+      return NULL;
+   }
+
+   u_surface_default_template(&surf_tmpl, stimg.texture);
+   surf_tmpl.format = stimg.format;
+   surf_tmpl.u.tex.level = stimg.level;
+   surf_tmpl.u.tex.first_layer = stimg.layer;
+   surf_tmpl.u.tex.last_layer = stimg.layer;
+   ps = st->pipe->create_surface(st->pipe, stimg.texture, &surf_tmpl);
+   pipe_resource_reference(&stimg.texture, NULL);
+
+   return ps;
+}
 
 /**
  * Return the base format just like _mesa_base_fbo_format does.
@@ -71,11 +147,11 @@ st_egl_image_target_renderbuffer_storage(struct gl_context *ctx,
 					 struct gl_renderbuffer *rb,
 					 GLeglImageOES image_handle)
 {
-   struct st_context *st = st_context(ctx);
    struct st_renderbuffer *strb = st_renderbuffer(rb);
    struct pipe_surface *ps;
 
-   ps = st_manager_get_egl_image_surface(st, (void *) image_handle);
+   ps = st_egl_image_get_surface(ctx, image_handle, PIPE_BIND_RENDER_TARGET,
+				 "glEGLImageTargetRenderbufferStorage");
    if (ps) {
       strb->Base.Width = ps->width;
       strb->Base.Height = ps->height;
@@ -83,7 +159,12 @@ st_egl_image_target_renderbuffer_storage(struct gl_context *ctx,
       strb->Base._BaseFormat = st_pipe_format_to_base_format(ps->format);
       strb->Base.InternalFormat = strb->Base._BaseFormat;
 
-      pipe_surface_reference(&strb->surface, ps);
+      struct pipe_surface **psurf =
+         util_format_is_srgb(ps->format) ? &strb->surface_srgb :
+                                           &strb->surface_linear;
+
+      pipe_surface_reference(psurf, ps);
+      strb->surface = *psurf;
       pipe_resource_reference(&strb->texture, ps->texture);
 
       pipe_surface_reference(&ps, NULL);
@@ -119,6 +200,24 @@ st_bind_surface(struct gl_context *ctx, GLenum target,
 
    texFormat = st_pipe_format_to_mesa_format(ps->format);
 
+   /* TODO RequiredTextureImageUnits should probably be reset back
+    * to 1 somewhere if different texture is bound??
+    */
+   if (texFormat == MESA_FORMAT_NONE) {
+      switch (ps->format) {
+      case PIPE_FORMAT_NV12:
+         texFormat = MESA_FORMAT_R_UNORM8;
+         texObj->RequiredTextureImageUnits = 2;
+         break;
+      case PIPE_FORMAT_IYUV:
+         texFormat = MESA_FORMAT_R_UNORM8;
+         texObj->RequiredTextureImageUnits = 3;
+         break;
+      default:
+         unreachable("bad YUV format!");
+      }
+   }
+
    _mesa_init_teximage_fields(ctx, texImage,
                               ps->width, ps->height, 1, 0, internalFormat,
                               texFormat);
@@ -139,10 +238,10 @@ st_egl_image_target_texture_2d(struct gl_context *ctx, GLenum target,
 			       struct gl_texture_image *texImage,
 			       GLeglImageOES image_handle)
 {
-   struct st_context *st = st_context(ctx);
    struct pipe_surface *ps;
 
-   ps = st_manager_get_egl_image_surface(st, (void *) image_handle);
+   ps = st_egl_image_get_surface(ctx, image_handle, PIPE_BIND_SAMPLER_VIEW,
+				 "glEGLImageTargetTexture2D");
    if (ps) {
       st_bind_surface(ctx, target, texObj, texImage, ps);
       pipe_surface_reference(&ps, NULL);

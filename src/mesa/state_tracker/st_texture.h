@@ -84,6 +84,9 @@ struct st_texture_object
     */
    GLuint lastLevel;
 
+   unsigned int validated_first_level;
+   unsigned int validated_last_level;
+
    /* On validation any active images held in main memory or in other
     * textures will be copied to this texture and the old storage freed.
     */
@@ -107,6 +110,26 @@ struct st_texture_object
     * views and surfaces instead of pt->format.
     */
    enum pipe_format surface_format;
+
+   /* When non-zero, samplers should use this layer instead of the one
+    * specified by the GL state.
+    *
+    * This is used for VDPAU interop, where imported pipe_resources may be
+    * array textures (containing layers with different fields) even though the
+    * GL state describes one non-array texture per field.
+    */
+   uint layer_override;
+
+   /** The glsl version of the shader seen during the previous validation */
+   bool prev_glsl130_or_later;
+   /** The value of the sampler's sRGBDecode state at the previous validation */
+   GLenum prev_sRGBDecode;
+
+    /**
+     * Set when the texture images of this texture object might not all be in
+     * the pipe_resource *pt above.
+     */
+    bool needs_validation;
 };
 
 
@@ -150,26 +173,27 @@ st_get_stobj_resource(struct st_texture_object *stObj)
 }
 
 
-static inline struct pipe_sampler_view *
-st_create_texture_sampler_view_format(struct pipe_context *pipe,
-                                      struct pipe_resource *texture,
-                                      enum pipe_format format)
+static inline struct st_texture_object *
+st_get_texture_object(struct gl_context *ctx,
+                      const struct gl_program *prog,
+                      unsigned unit)
 {
-   struct pipe_sampler_view templ;
+   const GLuint texUnit = prog->SamplerUnits[unit];
+   struct gl_texture_object *texObj = ctx->Texture.Unit[texUnit]._Current;
 
-   u_sampler_view_default_template(&templ, texture, format);
+   if (!texObj)
+      return NULL;
 
-   return pipe->create_sampler_view(pipe, texture, &templ);
+   return st_texture_object(texObj);
 }
 
-static inline struct pipe_sampler_view *
-st_create_texture_sampler_view(struct pipe_context *pipe,
-                               struct pipe_resource *texture)
+static inline enum pipe_format
+st_get_view_format(struct st_texture_object *stObj)
 {
-   return st_create_texture_sampler_view_format(pipe, texture,
-                                                texture->format);
+   if (!stObj)
+      return PIPE_FORMAT_NONE;
+   return stObj->surface_based ? stObj->surface_format : stObj->pt->format;
 }
-
 
 
 extern struct pipe_resource *
@@ -187,13 +211,13 @@ st_texture_create(struct st_context *st,
 
 extern void
 st_gl_texture_dims_to_pipe_dims(GLenum texture,
-                                GLuint widthIn,
-                                GLuint heightIn,
-                                GLuint depthIn,
-                                GLuint *widthOut,
-                                GLuint *heightOut,
-                                GLuint *depthOut,
-                                GLuint *layersOut);
+                                unsigned widthIn,
+                                uint16_t heightIn,
+                                uint16_t depthIn,
+                                unsigned *widthOut,
+                                uint16_t *heightOut,
+                                uint16_t *depthOut,
+                                uint16_t *layersOut);
 
 /* Check if an image fits into an existing texture object.
  */
@@ -235,22 +259,47 @@ st_texture_image_copy(struct pipe_context *pipe,
 extern struct pipe_resource *
 st_create_color_map_texture(struct gl_context *ctx);
 
-extern struct pipe_sampler_view **
-st_texture_get_sampler_view(struct st_context *st,
-                            struct st_texture_object *stObj);
-
-extern void
-st_texture_release_sampler_view(struct st_context *st,
-                                struct st_texture_object *stObj);
-
-extern void
-st_texture_release_all_sampler_views(struct st_context *st,
-                                     struct st_texture_object *stObj);
+void
+st_destroy_bound_texture_handles(struct st_context *st);
 
 void
-st_texture_free_sampler_views(struct st_texture_object *stObj);
+st_destroy_bound_image_handles(struct st_context *st);
 
 bool
 st_etc_fallback(struct st_context *st, struct gl_texture_image *texImage);
+
+void
+st_convert_image(const struct st_context *st, const struct gl_image_unit *u,
+                 struct pipe_image_view *img);
+
+void
+st_convert_image_from_unit(const struct st_context *st,
+                           struct pipe_image_view *img,
+                           GLuint imgUnit);
+
+void
+st_convert_sampler(const struct st_context *st,
+                   const struct gl_texture_object *texobj,
+                   const struct gl_sampler_object *msamp,
+                   float tex_unit_lod_bias,
+                   struct pipe_sampler_state *sampler);
+
+void
+st_convert_sampler_from_unit(const struct st_context *st,
+                             struct pipe_sampler_state *sampler,
+                             GLuint texUnit);
+
+void
+st_update_single_texture(struct st_context *st,
+                         struct pipe_sampler_view **sampler_view,
+                         GLuint texUnit, bool glsl130_or_later);
+
+void
+st_make_bound_samplers_resident(struct st_context *st,
+                                struct gl_program *prog);
+
+void
+st_make_bound_images_resident(struct st_context *st,
+                              struct gl_program *prog);
 
 #endif

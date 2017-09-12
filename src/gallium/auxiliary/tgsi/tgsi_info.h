@@ -76,11 +76,10 @@ struct tgsi_opcode_info
    unsigned is_tex:1;
    unsigned is_store:1;
    unsigned is_branch:1;
-   int pre_dedent:2;
-   int post_indent:2;
+   unsigned pre_dedent:1;
+   unsigned post_indent:1;
    enum tgsi_output_mode output_mode:3;
-   const char *mnemonic;
-   uint opcode;
+   unsigned opcode:8;
 };
 
 const struct tgsi_opcode_info *
@@ -98,12 +97,15 @@ enum tgsi_opcode_type {
    TGSI_TYPE_UNSIGNED,
    TGSI_TYPE_SIGNED,
    TGSI_TYPE_FLOAT,
-   TGSI_TYPE_DOUBLE
+   TGSI_TYPE_DOUBLE,
+   TGSI_TYPE_UNSIGNED64,
+   TGSI_TYPE_SIGNED64,
 };
 
 static inline bool tgsi_type_is_64bit(enum tgsi_opcode_type type)
 {
-   if (type == TGSI_TYPE_DOUBLE)
+   if (type == TGSI_TYPE_DOUBLE || type == TGSI_TYPE_UNSIGNED64 ||
+       type == TGSI_TYPE_SIGNED64)
       return true;
    return false;
 }

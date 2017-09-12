@@ -21,18 +21,13 @@
  * IN THE SOFTWARE.
  */
 
-#include "util/mesa-sha1.h"
 #include "util/hash_table.h"
 #include "util/debug.h"
 #include "anv_private.h"
 
-struct shader_bin_key {
-   uint32_t size;
-   uint8_t data[0];
-};
-
 static size_t
-anv_shader_bin_size(uint32_t prog_data_size, uint32_t key_size,
+anv_shader_bin_size(uint32_t prog_data_size, uint32_t nr_params,
+                    uint32_t key_size,
                     uint32_t surface_count, uint32_t sampler_count)
 {
    const uint32_t binding_data_size =
@@ -40,32 +35,25 @@ anv_shader_bin_size(uint32_t prog_data_size, uint32_t key_size,
 
    return align_u32(sizeof(struct anv_shader_bin), 8) +
           align_u32(prog_data_size, 8) +
+          align_u32(nr_params * sizeof(void *), 8) +
           align_u32(sizeof(uint32_t) + key_size, 8) +
           align_u32(binding_data_size, 8);
-}
-
-static inline const struct shader_bin_key *
-anv_shader_bin_get_key(const struct anv_shader_bin *shader)
-{
-   const void *data = shader;
-   data += align_u32(sizeof(struct anv_shader_bin), 8);
-   data += align_u32(shader->prog_data_size, 8);
-   return data;
 }
 
 struct anv_shader_bin *
 anv_shader_bin_create(struct anv_device *device,
                       const void *key_data, uint32_t key_size,
                       const void *kernel_data, uint32_t kernel_size,
-                      const void *prog_data, uint32_t prog_data_size,
+                      const struct brw_stage_prog_data *prog_data,
+                      uint32_t prog_data_size, const void *prog_data_param,
                       const struct anv_pipeline_bind_map *bind_map)
 {
    const size_t size =
-      anv_shader_bin_size(prog_data_size, key_size,
+      anv_shader_bin_size(prog_data_size, prog_data->nr_params, key_size,
                           bind_map->surface_count, bind_map->sampler_count);
 
    struct anv_shader_bin *shader =
-      anv_alloc(&device->alloc, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+      vk_alloc(&device->alloc, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!shader)
       return NULL;
 
@@ -82,10 +70,20 @@ anv_shader_bin_create(struct anv_device *device,
    void *data = shader;
    data += align_u32(sizeof(struct anv_shader_bin), 8);
 
+   shader->prog_data = data;
+   struct brw_stage_prog_data *new_prog_data = data;
    memcpy(data, prog_data, prog_data_size);
    data += align_u32(prog_data_size, 8);
 
-   struct shader_bin_key *key = data;
+   assert(prog_data->nr_pull_params == 0);
+   assert(prog_data->nr_image_params == 0);
+   new_prog_data->param = data;
+   uint32_t param_size = prog_data->nr_params * sizeof(void *);
+   memcpy(data, prog_data_param, param_size);
+   data += align_u32(param_size, 8);
+
+   shader->key = data;
+   struct anv_shader_bin_key *key = data;
    key->size = key_size;
    memcpy(key->data, key_data, key_size);
    data += align_u32(sizeof(*key) + key_size, 8);
@@ -108,14 +106,14 @@ anv_shader_bin_destroy(struct anv_device *device,
 {
    assert(shader->ref_cnt == 0);
    anv_state_pool_free(&device->instruction_state_pool, shader->kernel);
-   anv_free(&device->alloc, shader);
+   vk_free(&device->alloc, shader);
 }
 
 static size_t
 anv_shader_bin_data_size(const struct anv_shader_bin *shader)
 {
    return anv_shader_bin_size(shader->prog_data_size,
-                              anv_shader_bin_get_key(shader)->size,
+                              shader->prog_data->nr_params, shader->key->size,
                               shader->bind_map.surface_count,
                               shader->bind_map.sampler_count) +
           align_u32(shader->kernel_size, 8);
@@ -126,7 +124,7 @@ anv_shader_bin_write_data(const struct anv_shader_bin *shader, void *data)
 {
    size_t struct_size =
       anv_shader_bin_size(shader->prog_data_size,
-                          anv_shader_bin_get_key(shader)->size,
+                          shader->prog_data->nr_params, shader->key->size,
                           shader->bind_map.surface_count,
                           shader->bind_map.sampler_count);
 
@@ -151,14 +149,14 @@ anv_shader_bin_write_data(const struct anv_shader_bin *shader, void *data)
 static uint32_t
 shader_bin_key_hash_func(const void *void_key)
 {
-   const struct shader_bin_key *key = void_key;
+   const struct anv_shader_bin_key *key = void_key;
    return _mesa_hash_data(key->data, key->size);
 }
 
 static bool
 shader_bin_key_compare_func(const void *void_a, const void *void_b)
 {
-   const struct shader_bin_key *a = void_a, *b = void_b;
+   const struct anv_shader_bin_key *a = void_a, *b = void_b;
    if (a->size != b->size)
       return false;
 
@@ -199,38 +197,12 @@ anv_pipeline_cache_finish(struct anv_pipeline_cache *cache)
    }
 }
 
-void
-anv_hash_shader(unsigned char *hash, const void *key, size_t key_size,
-                struct anv_shader_module *module,
-                const char *entrypoint,
-                const struct anv_pipeline_layout *pipeline_layout,
-                const VkSpecializationInfo *spec_info)
-{
-   struct mesa_sha1 *ctx;
-
-   ctx = _mesa_sha1_init();
-   _mesa_sha1_update(ctx, key, key_size);
-   _mesa_sha1_update(ctx, module->sha1, sizeof(module->sha1));
-   _mesa_sha1_update(ctx, entrypoint, strlen(entrypoint));
-   if (pipeline_layout) {
-      _mesa_sha1_update(ctx, pipeline_layout->sha1,
-                        sizeof(pipeline_layout->sha1));
-   }
-   /* hash in shader stage, pipeline layout? */
-   if (spec_info) {
-      _mesa_sha1_update(ctx, spec_info->pMapEntries,
-                        spec_info->mapEntryCount * sizeof spec_info->pMapEntries[0]);
-      _mesa_sha1_update(ctx, spec_info->pData, spec_info->dataSize);
-   }
-   _mesa_sha1_final(ctx, hash);
-}
-
 static struct anv_shader_bin *
 anv_pipeline_cache_search_locked(struct anv_pipeline_cache *cache,
                                  const void *key_data, uint32_t key_size)
 {
    uint32_t vla[1 + DIV_ROUND_UP(key_size, sizeof(uint32_t))];
-   struct shader_bin_key *key = (void *)vla;
+   struct anv_shader_bin_key *key = (void *)vla;
    key->size = key_size;
    memcpy(key->data, key_data, key_size);
 
@@ -266,7 +238,9 @@ static struct anv_shader_bin *
 anv_pipeline_cache_add_shader(struct anv_pipeline_cache *cache,
                               const void *key_data, uint32_t key_size,
                               const void *kernel_data, uint32_t kernel_size,
-                              const void *prog_data, uint32_t prog_data_size,
+                              const struct brw_stage_prog_data *prog_data,
+                              uint32_t prog_data_size,
+                              const void *prog_data_param,
                               const struct anv_pipeline_bind_map *bind_map)
 {
    struct anv_shader_bin *shader =
@@ -277,11 +251,12 @@ anv_pipeline_cache_add_shader(struct anv_pipeline_cache *cache,
    struct anv_shader_bin *bin =
       anv_shader_bin_create(cache->device, key_data, key_size,
                             kernel_data, kernel_size,
-                            prog_data, prog_data_size, bind_map);
+                            prog_data, prog_data_size, prog_data_param,
+                            bind_map);
    if (!bin)
       return NULL;
 
-   _mesa_hash_table_insert(cache->cache, anv_shader_bin_get_key(bin), bin);
+   _mesa_hash_table_insert(cache->cache, bin->key, bin);
 
    return bin;
 }
@@ -290,7 +265,8 @@ struct anv_shader_bin *
 anv_pipeline_cache_upload_kernel(struct anv_pipeline_cache *cache,
                                  const void *key_data, uint32_t key_size,
                                  const void *kernel_data, uint32_t kernel_size,
-                                 const void *prog_data, uint32_t prog_data_size,
+                                 const struct brw_stage_prog_data *prog_data,
+                                 uint32_t prog_data_size,
                                  const struct anv_pipeline_bind_map *bind_map)
 {
    if (cache->cache) {
@@ -299,19 +275,22 @@ anv_pipeline_cache_upload_kernel(struct anv_pipeline_cache *cache,
       struct anv_shader_bin *bin =
          anv_pipeline_cache_add_shader(cache, key_data, key_size,
                                        kernel_data, kernel_size,
-                                       prog_data, prog_data_size, bind_map);
+                                       prog_data, prog_data_size,
+                                       prog_data->param, bind_map);
 
       pthread_mutex_unlock(&cache->mutex);
 
       /* We increment refcount before handing it to the caller */
-      anv_shader_bin_ref(bin);
+      if (bin)
+         anv_shader_bin_ref(bin);
 
       return bin;
    } else {
       /* In this case, we're not caching it so the caller owns it entirely */
       return anv_shader_bin_create(cache->device, key_data, key_size,
                                    kernel_data, kernel_size,
-                                   prog_data, prog_data_size, bind_map);
+                                   prog_data, prog_data_size,
+                                   prog_data->param, bind_map);
    }
 }
 
@@ -328,8 +307,8 @@ anv_pipeline_cache_load(struct anv_pipeline_cache *cache,
                         const void *data, size_t size)
 {
    struct anv_device *device = cache->device;
+   struct anv_physical_device *pdevice = &device->instance->physicalDevice;
    struct cache_header header;
-   uint8_t uuid[VK_UUID_SIZE];
 
    if (cache->cache == NULL)
       return;
@@ -345,8 +324,7 @@ anv_pipeline_cache_load(struct anv_pipeline_cache *cache,
       return;
    if (header.device_id != device->chipset_id)
       return;
-   anv_device_get_cache_uuid(uuid);
-   if (memcmp(header.uuid, uuid, VK_UUID_SIZE) != 0)
+   if (memcmp(header.uuid, pdevice->pipeline_cache_uuid, VK_UUID_SIZE) != 0)
       return;
 
    const void *end = data + size;
@@ -366,10 +344,16 @@ anv_pipeline_cache_load(struct anv_pipeline_cache *cache,
       memcpy(&bin, p, sizeof(bin));
       p += align_u32(sizeof(struct anv_shader_bin), 8);
 
-      const void *prog_data = p;
+      const struct brw_stage_prog_data *prog_data = p;
       p += align_u32(bin.prog_data_size, 8);
+      if (p > end)
+         break;
 
-      struct shader_bin_key key;
+      uint32_t param_size = prog_data->nr_params * sizeof(void *);
+      const void *prog_data_param = p;
+      p += align_u32(param_size, 8);
+
+      struct anv_shader_bin_key key;
       if (p + sizeof(key) > end)
          break;
       memcpy(&key, p, sizeof(key));
@@ -392,7 +376,7 @@ anv_pipeline_cache_load(struct anv_pipeline_cache *cache,
       anv_pipeline_cache_add_shader(cache, key_data, key.size,
                                     kernel_data, bin.kernel_size,
                                     prog_data, bin.prog_data_size,
-                                    &bin.bind_map);
+                                    prog_data_param, &bin.bind_map);
    }
 }
 
@@ -417,7 +401,7 @@ VkResult anv_CreatePipelineCache(
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO);
    assert(pCreateInfo->flags == 0);
 
-   cache = anv_alloc2(&device->alloc, pAllocator,
+   cache = vk_alloc2(&device->alloc, pAllocator,
                        sizeof(*cache), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (cache == NULL)
@@ -443,9 +427,12 @@ void anv_DestroyPipelineCache(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_pipeline_cache, cache, _cache);
 
+   if (!cache)
+      return;
+
    anv_pipeline_cache_finish(cache);
 
-   anv_free2(&device->alloc, pAllocator, cache);
+   vk_free2(&device->alloc, pAllocator, cache);
 }
 
 VkResult anv_GetPipelineCacheData(
@@ -456,6 +443,7 @@ VkResult anv_GetPipelineCacheData(
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_pipeline_cache, cache, _cache);
+   struct anv_physical_device *pdevice = &device->instance->physicalDevice;
    struct cache_header *header;
 
    if (pData == NULL) {
@@ -483,20 +471,23 @@ VkResult anv_GetPipelineCacheData(
    header->header_version = VK_PIPELINE_CACHE_HEADER_VERSION_ONE;
    header->vendor_id = 0x8086;
    header->device_id = device->chipset_id;
-   anv_device_get_cache_uuid(header->uuid);
+   memcpy(header->uuid, pdevice->pipeline_cache_uuid, VK_UUID_SIZE);
    p += align_u32(header->header_size, 8);
 
    uint32_t *count = p;
    p += align_u32(sizeof(*count), 8);
    *count = 0;
 
+   VkResult result = VK_SUCCESS;
    if (cache->cache) {
       struct hash_entry *entry;
       hash_table_foreach(cache->cache, entry) {
          struct anv_shader_bin *shader = entry->data;
          size_t data_size = anv_shader_bin_data_size(entry->data);
-         if (p + data_size > end)
+         if (p + data_size > end) {
+            result = VK_INCOMPLETE;
             break;
+         }
 
          anv_shader_bin_write_data(shader, p);
          p += data_size;
@@ -507,7 +498,7 @@ VkResult anv_GetPipelineCacheData(
 
    *pDataSize = p - pData;
 
-   return VK_SUCCESS;
+   return result;
 }
 
 VkResult anv_MergePipelineCaches(
@@ -529,11 +520,13 @@ VkResult anv_MergePipelineCaches(
       struct hash_entry *entry;
       hash_table_foreach(src->cache, entry) {
          struct anv_shader_bin *bin = entry->data;
-         if (_mesa_hash_table_search(dst->cache, anv_shader_bin_get_key(bin)))
+         assert(bin);
+
+         if (_mesa_hash_table_search(dst->cache, bin->key))
             continue;
 
          anv_shader_bin_ref(bin);
-         _mesa_hash_table_insert(dst->cache, anv_shader_bin_get_key(bin), bin);
+         _mesa_hash_table_insert(dst->cache, bin->key, bin);
       }
    }
 

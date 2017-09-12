@@ -29,7 +29,7 @@
  */
 
 #include <xf86drm.h>
-#include <dlfcn.h>
+#include <fcntl.h>
 #include "GL/mesa_glinterop.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
@@ -45,11 +45,41 @@
 #include "main/bufferobj.h"
 #include "main/texobj.h"
 
-#include "dri_screen.h"
-#include "dri_context.h"
+#include "dri_helpers.h"
 #include "dri_drawable.h"
 #include "dri_query_renderer.h"
 #include "dri2_buffer.h"
+
+#ifndef DRM_FORMAT_MOD_INVALID
+#define DRM_FORMAT_MOD_INVALID ((1ULL<<56) - 1)
+#endif
+
+static const int fourcc_formats[] = {
+   __DRI_IMAGE_FOURCC_ARGB8888,
+   __DRI_IMAGE_FOURCC_ABGR8888,
+   __DRI_IMAGE_FOURCC_SARGB8888,
+   __DRI_IMAGE_FOURCC_XRGB8888,
+   __DRI_IMAGE_FOURCC_XBGR8888,
+   __DRI_IMAGE_FOURCC_ARGB1555,
+   __DRI_IMAGE_FOURCC_RGB565,
+   __DRI_IMAGE_FOURCC_R8,
+   __DRI_IMAGE_FOURCC_R16,
+   __DRI_IMAGE_FOURCC_GR88,
+   __DRI_IMAGE_FOURCC_GR1616,
+   __DRI_IMAGE_FOURCC_YUV410,
+   __DRI_IMAGE_FOURCC_YUV411,
+   __DRI_IMAGE_FOURCC_YUV420,
+   __DRI_IMAGE_FOURCC_YUV422,
+   __DRI_IMAGE_FOURCC_YUV444,
+   __DRI_IMAGE_FOURCC_YVU410,
+   __DRI_IMAGE_FOURCC_YVU411,
+   __DRI_IMAGE_FOURCC_YVU420,
+   __DRI_IMAGE_FOURCC_YVU422,
+   __DRI_IMAGE_FOURCC_YVU444,
+   __DRI_IMAGE_FOURCC_NV12,
+   __DRI_IMAGE_FOURCC_NV16,
+   __DRI_IMAGE_FOURCC_YUYV
+};
 
 static int convert_fourcc(int format, int *dri_components_p)
 {
@@ -83,6 +113,21 @@ static int convert_fourcc(int format, int *dri_components_p)
       format = __DRI_IMAGE_FORMAT_GR88;
       dri_components = __DRI_IMAGE_COMPONENTS_RG;
       break;
+   /*
+    * For multi-planar YUV formats, we return the format of the first
+    * plane only.  Since there is only one caller which supports multi-
+    * planar YUV it gets to figure out the remaining planes on it's
+    * own.
+    */
+   case __DRI_IMAGE_FOURCC_YUV420:
+   case __DRI_IMAGE_FOURCC_YVU420:
+      format = __DRI_IMAGE_FORMAT_R8;
+      dri_components = __DRI_IMAGE_COMPONENTS_Y_U_V;
+      break;
+   case __DRI_IMAGE_FOURCC_NV12:
+      format = __DRI_IMAGE_FORMAT_R8;
+      dri_components = __DRI_IMAGE_COMPONENTS_Y_UV;
+      break;
    default:
       return -1;
    }
@@ -90,6 +135,11 @@ static int convert_fourcc(int format, int *dri_components_p)
    return format;
 }
 
+/* NOTE this probably isn't going to do the right thing for YUV images
+ * (but I think the same can be said for intel_query_image()).  I think
+ * only needed for exporting dmabuf's, so I think I won't loose much
+ * sleep over it.
+ */
 static int convert_to_fourcc(int format)
 {
    switch(format) {
@@ -134,6 +184,9 @@ static enum pipe_format dri2_format_to_pipe_format (int format)
    case __DRI_IMAGE_FORMAT_ARGB8888:
       pf = PIPE_FORMAT_BGRA8888_UNORM;
       break;
+   case __DRI_IMAGE_FORMAT_XBGR8888:
+      pf = PIPE_FORMAT_RGBX8888_UNORM;
+      break;
    case __DRI_IMAGE_FORMAT_ABGR8888:
       pf = PIPE_FORMAT_RGBA8888_UNORM;
       break;
@@ -146,6 +199,70 @@ static enum pipe_format dri2_format_to_pipe_format (int format)
    default:
       pf = PIPE_FORMAT_NONE;
       break;
+   }
+
+   return pf;
+}
+
+static enum pipe_format fourcc_to_pipe_format(int fourcc)
+{
+   enum pipe_format pf;
+
+   switch (fourcc) {
+   case __DRI_IMAGE_FOURCC_R8:
+      pf = PIPE_FORMAT_R8_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_GR88:
+      pf = PIPE_FORMAT_RG88_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_ARGB1555:
+      pf = PIPE_FORMAT_B5G5R5A1_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_R16:
+      pf = PIPE_FORMAT_R16_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_GR1616:
+      pf = PIPE_FORMAT_RG1616_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_RGB565:
+      pf = PIPE_FORMAT_B5G6R5_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_ARGB8888:
+      pf = PIPE_FORMAT_BGRA8888_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_XRGB8888:
+      pf = PIPE_FORMAT_BGRX8888_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_ABGR8888:
+      pf = PIPE_FORMAT_RGBA8888_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_XBGR8888:
+      pf = PIPE_FORMAT_RGBX8888_UNORM;
+      break;
+
+   case __DRI_IMAGE_FOURCC_NV12:
+      pf = PIPE_FORMAT_NV12;
+      break;
+   case __DRI_IMAGE_FOURCC_YUYV:
+      pf = PIPE_FORMAT_YUYV;
+      break;
+   case __DRI_IMAGE_FOURCC_YUV420:
+   case __DRI_IMAGE_FOURCC_YVU420:
+      pf = PIPE_FORMAT_YV12;
+      break;
+
+   case __DRI_IMAGE_FOURCC_SARGB8888:
+   case __DRI_IMAGE_FOURCC_YUV410:
+   case __DRI_IMAGE_FOURCC_YUV411:
+   case __DRI_IMAGE_FOURCC_YUV422:
+   case __DRI_IMAGE_FOURCC_YUV444:
+   case __DRI_IMAGE_FOURCC_NV16:
+   case __DRI_IMAGE_FOURCC_YVU410:
+   case __DRI_IMAGE_FOURCC_YVU411:
+   case __DRI_IMAGE_FOURCC_YVU422:
+   case __DRI_IMAGE_FOURCC_YVU444:
+   default:
+      pf = PIPE_FORMAT_NONE;
    }
 
    return pf;
@@ -240,9 +357,11 @@ dri2_drawable_get_buffers(struct dri_drawable *drawable,
        */
       switch(format) {
       case PIPE_FORMAT_BGRA8888_UNORM:
+      case PIPE_FORMAT_RGBA8888_UNORM:
 	 depth = 32;
 	 break;
       case PIPE_FORMAT_BGRX8888_UNORM:
+      case PIPE_FORMAT_RGBX8888_UNORM:
 	 depth = 24;
 	 break;
       case PIPE_FORMAT_B5G6R5_UNORM:
@@ -317,6 +436,9 @@ dri_image_drawable_get_buffers(struct dri_drawable *drawable,
          break;
       case PIPE_FORMAT_BGRA8888_UNORM:
          image_format = __DRI_IMAGE_FORMAT_ARGB8888;
+         break;
+      case PIPE_FORMAT_RGBX8888_UNORM:
+         image_format = __DRI_IMAGE_FORMAT_XBGR8888;
          break;
       case PIPE_FORMAT_RGBA8888_UNORM:
          image_format = __DRI_IMAGE_FORMAT_ABGR8888;
@@ -608,7 +730,8 @@ dri2_allocate_textures(struct dri_context *ctx,
 
          if (drawable->textures[statt]) {
             templ.format = drawable->textures[statt]->format;
-            templ.bind = drawable->textures[statt]->bind & ~PIPE_BIND_SCANOUT;
+            templ.bind = drawable->textures[statt]->bind &
+                         ~(PIPE_BIND_SCANOUT | PIPE_BIND_SHARED);
             templ.nr_samples = drawable->stvis.samples;
 
             /* Try to reuse the resource.
@@ -657,7 +780,7 @@ dri2_allocate_textures(struct dri_context *ctx,
 
       if (format) {
          templ.format = format;
-         templ.bind = bind;
+         templ.bind = bind & ~PIPE_BIND_SHARED;
 
          if (drawable->stvis.samples > 1) {
             templ.nr_samples = drawable->stvis.samples;
@@ -736,6 +859,21 @@ dri2_flush_frontbuffer(struct dri_context *ctx,
    }
 }
 
+/**
+ * The struct dri_drawable flush_swapbuffers callback
+ */
+static void
+dri2_flush_swapbuffers(struct dri_context *ctx,
+                       struct dri_drawable *drawable)
+{
+   __DRIdrawable *dri_drawable = drawable->dPriv;
+   const __DRIimageLoaderExtension *image = drawable->sPriv->image.loader;
+
+   if (image && image->base.version >= 3 && image->flushSwapBuffers) {
+      image->flushSwapBuffers(dri_drawable, dri_drawable->loaderPrivate);
+   }
+}
+
 static void
 dri2_update_tex_buffer(struct dri_drawable *drawable,
                        struct dri_context *ctx,
@@ -745,31 +883,18 @@ dri2_update_tex_buffer(struct dri_drawable *drawable,
 }
 
 static __DRIimage *
-dri2_lookup_egl_image(struct dri_screen *screen, void *handle)
-{
-   const __DRIimageLookupExtension *loader = screen->sPriv->dri2.image;
-   __DRIimage *img;
-
-   if (!loader->lookupEGLImage)
-      return NULL;
-
-   img = loader->lookupEGLImage(screen->sPriv,
-				handle, screen->sPriv->loaderPrivate);
-
-   return img;
-}
-
-static __DRIimage *
 dri2_create_image_from_winsys(__DRIscreen *_screen,
                               int width, int height, int format,
-                              struct winsys_handle *whandle,
+                              int num_handles, struct winsys_handle *whandle,
                               void *loaderPrivate)
 {
    struct dri_screen *screen = dri_screen(_screen);
+   struct pipe_screen *pscreen = screen->base.screen;
    __DRIimage *img;
    struct pipe_resource templ;
    unsigned tex_usage;
    enum pipe_format pf;
+   int i;
 
    tex_usage = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
 
@@ -783,19 +908,47 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
 
    memset(&templ, 0, sizeof(templ));
    templ.bind = tex_usage;
-   templ.format = pf;
    templ.target = screen->target;
    templ.last_level = 0;
-   templ.width0 = width;
-   templ.height0 = height;
    templ.depth0 = 1;
    templ.array_size = 1;
 
-   img->texture = screen->base.screen->resource_from_handle(screen->base.screen,
-         &templ, whandle, PIPE_HANDLE_USAGE_READ_WRITE);
-   if (!img->texture) {
-      FREE(img);
-      return NULL;
+   for (i = num_handles - 1; i >= 0; i--) {
+      struct pipe_resource *tex;
+
+      /* TODO: something a lot less ugly */
+      switch (i) {
+      case 0:
+         templ.width0 = width;
+         templ.height0 = height;
+         templ.format = pf;
+         break;
+      case 1:
+         templ.width0 = width / 2;
+         templ.height0 = height / 2;
+         templ.format = (num_handles == 2) ?
+               PIPE_FORMAT_RG88_UNORM :   /* NV12, etc */
+               PIPE_FORMAT_R8_UNORM;      /* I420, etc */
+         break;
+      case 2:
+         templ.width0 = width / 2;
+         templ.height0 = height / 2;
+         templ.format = PIPE_FORMAT_R8_UNORM;
+         break;
+      default:
+         unreachable("too many planes!");
+      }
+
+      tex = pscreen->resource_from_handle(pscreen,
+            &templ, &whandle[i], PIPE_HANDLE_USAGE_READ_WRITE);
+      if (!tex) {
+         pipe_resource_reference(&img->texture, NULL);
+         FREE(img);
+         return NULL;
+      }
+
+      tex->next = img->texture;
+      img->texture = tex;
    }
 
    img->level = 0;
@@ -818,6 +971,7 @@ dri2_create_image_from_name(__DRIscreen *_screen,
    memset(&whandle, 0, sizeof(whandle));
    whandle.type = DRM_API_HANDLE_TYPE_SHARED;
    whandle.handle = name;
+   whandle.modifier = DRM_FORMAT_MOD_INVALID;
 
    pf = dri2_format_to_pipe_format (format);
    if (pf == PIPE_FORMAT_NONE)
@@ -826,22 +980,36 @@ dri2_create_image_from_name(__DRIscreen *_screen,
    whandle.stride = pitch * util_format_get_blocksize(pf);
 
    return dri2_create_image_from_winsys(_screen, width, height, format,
-                                        &whandle, loaderPrivate);
+                                        1, &whandle, loaderPrivate);
 }
 
 static __DRIimage *
 dri2_create_image_from_fd(__DRIscreen *_screen,
                           int width, int height, int fourcc,
-                          int *fds, int num_fds, int *strides,
-                          int *offsets, unsigned *error,
+                          uint64_t modifier, int *fds, int num_fds,
+                          int *strides, int *offsets, unsigned *error,
                           int *dri_components, void *loaderPrivate)
 {
-   struct winsys_handle whandle;
+   struct winsys_handle whandles[3];
    int format;
    __DRIimage *img = NULL;
    unsigned err = __DRI_IMAGE_ERROR_SUCCESS;
+   int expected_num_fds, i;
 
-   if (num_fds != 1) {
+   switch (fourcc) {
+   case __DRI_IMAGE_FOURCC_YUV420:
+   case __DRI_IMAGE_FOURCC_YVU420:
+      expected_num_fds = 3;
+      break;
+   case __DRI_IMAGE_FOURCC_NV12:
+      expected_num_fds = 2;
+      break;
+   default:
+      expected_num_fds = 1;
+      break;
+   }
+
+   if (num_fds != expected_num_fds) {
       err = __DRI_IMAGE_ERROR_BAD_MATCH;
       goto exit;
    }
@@ -852,19 +1020,31 @@ dri2_create_image_from_fd(__DRIscreen *_screen,
       goto exit;
    }
 
-   if (fds[0] < 0) {
-      err = __DRI_IMAGE_ERROR_BAD_ALLOC;
-      goto exit;
+   memset(whandles, 0, sizeof(whandles));
+
+   for (i = 0; i < num_fds; i++) {
+      if (fds[i] < 0) {
+         err = __DRI_IMAGE_ERROR_BAD_ALLOC;
+         goto exit;
+      }
+
+      whandles[i].type = DRM_API_HANDLE_TYPE_FD;
+      whandles[i].handle = (unsigned)fds[i];
+      whandles[i].stride = (unsigned)strides[i];
+      whandles[i].offset = (unsigned)offsets[i];
+      whandles[i].modifier = modifier;
    }
 
-   memset(&whandle, 0, sizeof(whandle));
-   whandle.type = DRM_API_HANDLE_TYPE_FD;
-   whandle.handle = (unsigned)fds[0];
-   whandle.stride = (unsigned)strides[0];
-   whandle.offset = (unsigned)offsets[0];
+   if (fourcc == __DRI_IMAGE_FOURCC_YVU420) {
+      /* convert to YUV420 by swapping 2nd and 3rd planes: */
+      struct winsys_handle tmp = whandles[1];
+      whandles[1] = whandles[2];
+      whandles[2] = tmp;
+      fourcc = __DRI_IMAGE_FOURCC_YUV420;
+   }
 
    img = dri2_create_image_from_winsys(_screen, width, height, format,
-                                       &whandle, loaderPrivate);
+                                       num_fds, whandles, loaderPrivate);
    if(img == NULL)
       err = __DRI_IMAGE_ERROR_BAD_ALLOC;
 
@@ -876,22 +1056,12 @@ exit:
 }
 
 static __DRIimage *
-dri2_create_image_from_renderbuffer(__DRIcontext *context,
-				    int renderbuffer, void *loaderPrivate)
-{
-   struct dri_context *ctx = dri_context(context);
-
-   if (!ctx->st->get_resource_for_egl_image)
-      return NULL;
-
-   /* TODO */
-   return NULL;
-}
-
-static __DRIimage *
-dri2_create_image(__DRIscreen *_screen,
-                   int width, int height, int format,
-                   unsigned int use, void *loaderPrivate)
+dri2_create_image_common(__DRIscreen *_screen,
+                         int width, int height,
+                         int format, unsigned int use,
+                         const uint64_t *modifiers,
+                         const unsigned count,
+                         void *loaderPrivate)
 {
    struct dri_screen *screen = dri_screen(_screen);
    __DRIimage *img;
@@ -899,7 +1069,13 @@ dri2_create_image(__DRIscreen *_screen,
    unsigned tex_usage;
    enum pipe_format pf;
 
+   /* createImageWithModifiers doesn't supply usage, and we should not get
+    * here with both modifiers and a usage flag.
+    */
+   assert(!(use && (modifiers != NULL)));
+
    tex_usage = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+
    if (use & __DRI_IMAGE_USE_SCANOUT)
       tex_usage |= PIPE_BIND_SCANOUT;
    if (use & __DRI_IMAGE_USE_SHARE)
@@ -930,7 +1106,16 @@ dri2_create_image(__DRIscreen *_screen,
    templ.depth0 = 1;
    templ.array_size = 1;
 
-   img->texture = screen->base.screen->resource_create(screen->base.screen, &templ);
+   if (modifiers)
+      img->texture =
+         screen->base.screen
+            ->resource_create_with_modifiers(screen->base.screen,
+                                             &templ,
+                                             modifiers,
+                                             count);
+   else
+      img->texture =
+         screen->base.screen->resource_create(screen->base.screen, &templ);
    if (!img->texture) {
       FREE(img);
       return NULL;
@@ -944,6 +1129,28 @@ dri2_create_image(__DRIscreen *_screen,
 
    img->loader_private = loaderPrivate;
    return img;
+}
+
+static __DRIimage *
+dri2_create_image(__DRIscreen *_screen,
+                   int width, int height, int format,
+                   unsigned int use, void *loaderPrivate)
+{
+   return dri2_create_image_common(_screen, width, height, format, use,
+                                   NULL /* modifiers */, 0 /* count */,
+                                   loaderPrivate);
+}
+
+static __DRIimage *
+dri2_create_image_with_modifiers(__DRIscreen *dri_screen,
+                                 int width, int height, int format,
+                                 const uint64_t *modifiers,
+                                 const unsigned count,
+                                 void *loaderPrivate)
+{
+   return dri2_create_image_common(dri_screen, width, height, format,
+                                   0 /* use */, modifiers, count,
+                                   loaderPrivate);
 }
 
 static GLboolean
@@ -962,26 +1169,38 @@ dri2_query_image(__DRIimage *image, int attrib, int *value)
    switch (attrib) {
    case __DRI_IMAGE_ATTRIB_STRIDE:
       whandle.type = DRM_API_HANDLE_TYPE_KMS;
-      image->texture->screen->resource_get_handle(image->texture->screen,
-            NULL, image->texture, &whandle, usage);
+      if (!image->texture->screen->resource_get_handle(image->texture->screen,
+            NULL, image->texture, &whandle, usage))
+         return GL_FALSE;
       *value = whandle.stride;
+      return GL_TRUE;
+   case __DRI_IMAGE_ATTRIB_OFFSET:
+      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      if (!image->texture->screen->resource_get_handle(image->texture->screen,
+            NULL, image->texture, &whandle, usage))
+         return GL_FALSE;
+      *value = whandle.offset;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_HANDLE:
       whandle.type = DRM_API_HANDLE_TYPE_KMS;
-      image->texture->screen->resource_get_handle(image->texture->screen,
-         NULL, image->texture, &whandle, usage);
+      if (!image->texture->screen->resource_get_handle(image->texture->screen,
+         NULL, image->texture, &whandle, usage))
+         return GL_FALSE;
       *value = whandle.handle;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_NAME:
       whandle.type = DRM_API_HANDLE_TYPE_SHARED;
-      image->texture->screen->resource_get_handle(image->texture->screen,
-         NULL, image->texture, &whandle, usage);
+      if (!image->texture->screen->resource_get_handle(image->texture->screen,
+         NULL, image->texture, &whandle, usage))
+         return GL_FALSE;
       *value = whandle.handle;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_FD:
       whandle.type= DRM_API_HANDLE_TYPE_FD;
-      image->texture->screen->resource_get_handle(image->texture->screen,
-         NULL, image->texture, &whandle, usage);
+      if (!image->texture->screen->resource_get_handle(image->texture->screen,
+            NULL, image->texture, &whandle, usage))
+         return GL_FALSE;
+
       *value = whandle.handle;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_FORMAT:
@@ -1003,6 +1222,26 @@ dri2_query_image(__DRIimage *image, int attrib, int *value)
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_NUM_PLANES:
       *value = 1;
+      return GL_TRUE;
+   case __DRI_IMAGE_ATTRIB_MODIFIER_UPPER:
+      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.modifier = DRM_FORMAT_MOD_INVALID;
+      if (!image->texture->screen->resource_get_handle(image->texture->screen,
+            NULL, image->texture, &whandle, usage))
+         return GL_FALSE;
+      if (whandle.modifier == DRM_FORMAT_MOD_INVALID)
+         return GL_FALSE;
+      *value = (whandle.modifier >> 32) & 0xffffffff;
+      return GL_TRUE;
+   case __DRI_IMAGE_ATTRIB_MODIFIER_LOWER:
+      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.modifier = DRM_FORMAT_MOD_INVALID;
+      if (!image->texture->screen->resource_get_handle(image->texture->screen,
+            NULL, image->texture, &whandle, usage))
+         return GL_FALSE;
+      if (whandle.modifier == DRM_FORMAT_MOD_INVALID)
+         return GL_FALSE;
+      *value = whandle.modifier & 0xffffffff;
       return GL_TRUE;
    default:
       return GL_FALSE;
@@ -1065,9 +1304,10 @@ dri2_from_names(__DRIscreen *screen, int width, int height, int format,
    whandle.handle = names[0];
    whandle.stride = strides[0];
    whandle.offset = offsets[0];
+   whandle.modifier = DRM_FORMAT_MOD_INVALID;
 
    img = dri2_create_image_from_winsys(screen, width, height, format,
-                                       &whandle, loaderPrivate);
+                                       1, &whandle, loaderPrivate);
    if (img == NULL)
       return NULL;
 
@@ -1090,74 +1330,12 @@ dri2_from_planar(__DRIimage *image, int plane, void *loaderPrivate)
    if (img == NULL)
       return NULL;
 
+   if (img->texture->screen->resource_changed)
+      img->texture->screen->resource_changed(img->texture->screen,
+                                             img->texture);
+
    /* set this to 0 for sub images. */
    img->dri_components = 0;
-   return img;
-}
-
-static __DRIimage *
-dri2_create_from_texture(__DRIcontext *context, int target, unsigned texture,
-                         int depth, int level, unsigned *error,
-                         void *loaderPrivate)
-{
-   __DRIimage *img;
-   struct gl_context *ctx = ((struct st_context *)dri_context(context)->st)->ctx;
-   struct gl_texture_object *obj;
-   struct pipe_resource *tex;
-   GLuint face = 0;
-
-   obj = _mesa_lookup_texture(ctx, texture);
-   if (!obj || obj->Target != target) {
-      *error = __DRI_IMAGE_ERROR_BAD_PARAMETER;
-      return NULL;
-   }
-
-   tex = st_get_texobj_resource(obj);
-   if (!tex) {
-      *error = __DRI_IMAGE_ERROR_BAD_PARAMETER;
-      return NULL;
-   }
-
-   if (target == GL_TEXTURE_CUBE_MAP)
-      face = depth;
-
-   _mesa_test_texobj_completeness(ctx, obj);
-   if (!obj->_BaseComplete || (level > 0 && !obj->_MipmapComplete)) {
-      *error = __DRI_IMAGE_ERROR_BAD_PARAMETER;
-      return NULL;
-   }
-
-   if (level < obj->BaseLevel || level > obj->_MaxLevel) {
-      *error = __DRI_IMAGE_ERROR_BAD_MATCH;
-      return NULL;
-   }
-
-   if (target == GL_TEXTURE_3D && obj->Image[face][level]->Depth < depth) {
-      *error = __DRI_IMAGE_ERROR_BAD_MATCH;
-      return NULL;
-   }
-
-   img = CALLOC_STRUCT(__DRIimageRec);
-   if (!img) {
-      *error = __DRI_IMAGE_ERROR_BAD_ALLOC;
-      return NULL;
-   }
-
-   img->level = level;
-   img->layer = depth;
-   img->dri_format = driGLFormatToImageFormat(obj->Image[face][level]->TexFormat);
-
-   img->loader_private = loaderPrivate;
-
-   if (img->dri_format == __DRI_IMAGE_FORMAT_NONE) {
-      *error = __DRI_IMAGE_ERROR_BAD_PARAMETER;
-      free(img);
-      return NULL;
-   }
-
-   pipe_resource_reference(&img->texture, tex);
-
-   *error = __DRI_IMAGE_ERROR_SUCCESS;
    return img;
 }
 
@@ -1170,13 +1348,58 @@ dri2_from_fds(__DRIscreen *screen, int width, int height, int fourcc,
    int dri_components;
 
    img = dri2_create_image_from_fd(screen, width, height, fourcc,
-                                   fds, num_fds, strides, offsets, NULL,
+                                   DRM_FORMAT_MOD_INVALID, fds, num_fds,
+                                   strides, offsets, NULL,
                                    &dri_components, loaderPrivate);
    if (img == NULL)
       return NULL;
 
    img->dri_components = dri_components;
    return img;
+}
+
+static boolean
+dri2_query_dma_buf_formats(__DRIscreen *_screen, int max, int *formats,
+                           int *count)
+{
+   struct dri_screen *screen = dri_screen(_screen);
+   struct pipe_screen *pscreen = screen->base.screen;
+   const unsigned bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+   int i, j;
+
+   for (i = 0, j = 0; (i < ARRAY_SIZE(fourcc_formats)) &&
+         (j < max || max == 0); i++) {
+      if (pscreen->is_format_supported(pscreen,
+                                       fourcc_to_pipe_format(
+                                          fourcc_formats[i]),
+                                       screen->target,
+                                       0, bind)) {
+         if (j < max)
+            formats[j] = fourcc_formats[i];
+         j++;
+      }
+   }
+   *count = j;
+   return true;
+}
+
+static boolean
+dri2_query_dma_buf_modifiers(__DRIscreen *_screen, int fourcc, int max,
+                             uint64_t *modifiers, unsigned int *external_only,
+                             int *count)
+{
+   struct dri_screen *screen = dri_screen(_screen);
+   struct pipe_screen *pscreen = screen->base.screen;
+   enum pipe_format format = fourcc_to_pipe_format(fourcc);
+   const unsigned usage = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+
+   if (pscreen->query_dmabuf_modifiers != NULL &&
+       pscreen->is_format_supported(pscreen, format, screen->target, 0, usage)) {
+      pscreen->query_dmabuf_modifiers(pscreen, format, max, modifiers,
+                                      external_only, count);
+      return true;
+   }
+   return false;
 }
 
 static __DRIimage *
@@ -1195,8 +1418,40 @@ dri2_from_dma_bufs(__DRIscreen *screen,
    int dri_components;
 
    img = dri2_create_image_from_fd(screen, width, height, fourcc,
-                                   fds, num_fds, strides, offsets, error,
+                                   DRM_FORMAT_MOD_INVALID, fds, num_fds,
+                                   strides, offsets, error,
                                    &dri_components, loaderPrivate);
+   if (img == NULL)
+      return NULL;
+
+   img->yuv_color_space = yuv_color_space;
+   img->sample_range = sample_range;
+   img->horizontal_siting = horizontal_siting;
+   img->vertical_siting = vertical_siting;
+   img->dri_components = dri_components;
+
+   *error = __DRI_IMAGE_ERROR_SUCCESS;
+   return img;
+}
+
+static __DRIimage *
+dri2_from_dma_bufs2(__DRIscreen *screen,
+                    int width, int height, int fourcc,
+                    uint64_t modifier, int *fds, int num_fds,
+                    int *strides, int *offsets,
+                    enum __DRIYUVColorSpace yuv_color_space,
+                    enum __DRISampleRange sample_range,
+                    enum __DRIChromaSiting horizontal_siting,
+                    enum __DRIChromaSiting vertical_siting,
+                    unsigned *error,
+                    void *loaderPrivate)
+{
+   __DRIimage *img;
+   int dri_components;
+
+   img = dri2_create_image_from_fd(screen, width, height, fourcc,
+                                   modifier, fds, num_fds, strides, offsets,
+                                   error, &dri_components, loaderPrivate);
    if (img == NULL)
       return NULL;
 
@@ -1296,13 +1551,6 @@ dri2_unmap_image(__DRIcontext *context, __DRIimage *image, void *data)
    pipe_transfer_unmap(pipe, (struct pipe_transfer *)data);
 }
 
-static void
-dri2_destroy_image(__DRIimage *img)
-{
-   pipe_resource_reference(&img->texture, NULL);
-   FREE(img);
-}
-
 static int
 dri2_get_capabilities(__DRIscreen *_screen)
 {
@@ -1313,7 +1561,7 @@ dri2_get_capabilities(__DRIscreen *_screen)
 
 /* The extension is modified during runtime if DRI_PRIME is detected */
 static __DRIimageExtension dri2ImageExtension = {
-    .base = { __DRI_IMAGE, 12 },
+    .base = { __DRI_IMAGE, 15 },
 
     .createImageFromName          = dri2_create_image_from_name,
     .createImageFromRenderbuffer  = dri2_create_image_from_renderbuffer,
@@ -1331,156 +1579,6 @@ static __DRIimageExtension dri2ImageExtension = {
     .getCapabilities              = dri2_get_capabilities,
     .mapImage                     = dri2_map_image,
     .unmapImage                   = dri2_unmap_image,
-};
-
-
-static bool
-dri2_is_opencl_interop_loaded_locked(struct dri_screen *screen)
-{
-   return screen->opencl_dri_event_add_ref &&
-          screen->opencl_dri_event_release &&
-          screen->opencl_dri_event_wait &&
-          screen->opencl_dri_event_get_fence;
-}
-
-static bool
-dri2_load_opencl_interop(struct dri_screen *screen)
-{
-#if defined(RTLD_DEFAULT)
-   bool success;
-
-   pipe_mutex_lock(screen->opencl_func_mutex);
-
-   if (dri2_is_opencl_interop_loaded_locked(screen)) {
-      pipe_mutex_unlock(screen->opencl_func_mutex);
-      return true;
-   }
-
-   screen->opencl_dri_event_add_ref =
-      dlsym(RTLD_DEFAULT, "opencl_dri_event_add_ref");
-   screen->opencl_dri_event_release =
-      dlsym(RTLD_DEFAULT, "opencl_dri_event_release");
-   screen->opencl_dri_event_wait =
-      dlsym(RTLD_DEFAULT, "opencl_dri_event_wait");
-   screen->opencl_dri_event_get_fence =
-      dlsym(RTLD_DEFAULT, "opencl_dri_event_get_fence");
-
-   success = dri2_is_opencl_interop_loaded_locked(screen);
-   pipe_mutex_unlock(screen->opencl_func_mutex);
-   return success;
-#else
-   return false;
-#endif
-}
-
-struct dri2_fence {
-   struct dri_screen *driscreen;
-   struct pipe_fence_handle *pipe_fence;
-   void *cl_event;
-};
-
-static void *
-dri2_create_fence(__DRIcontext *_ctx)
-{
-   struct pipe_context *ctx = dri_context(_ctx)->st->pipe;
-   struct dri2_fence *fence = CALLOC_STRUCT(dri2_fence);
-
-   if (!fence)
-      return NULL;
-
-   ctx->flush(ctx, &fence->pipe_fence, 0);
-
-   if (!fence->pipe_fence) {
-      FREE(fence);
-      return NULL;
-   }
-
-   fence->driscreen = dri_screen(_ctx->driScreenPriv);
-   return fence;
-}
-
-static void *
-dri2_get_fence_from_cl_event(__DRIscreen *_screen, intptr_t cl_event)
-{
-   struct dri_screen *driscreen = dri_screen(_screen);
-   struct dri2_fence *fence;
-
-   if (!dri2_load_opencl_interop(driscreen))
-      return NULL;
-
-   fence = CALLOC_STRUCT(dri2_fence);
-   if (!fence)
-      return NULL;
-
-   fence->cl_event = (void*)cl_event;
-
-   if (!driscreen->opencl_dri_event_add_ref(fence->cl_event)) {
-      free(fence);
-      return NULL;
-   }
-
-   fence->driscreen = driscreen;
-   return fence;
-}
-
-static void
-dri2_destroy_fence(__DRIscreen *_screen, void *_fence)
-{
-   struct dri_screen *driscreen = dri_screen(_screen);
-   struct pipe_screen *screen = driscreen->base.screen;
-   struct dri2_fence *fence = (struct dri2_fence*)_fence;
-
-   if (fence->pipe_fence)
-      screen->fence_reference(screen, &fence->pipe_fence, NULL);
-   else if (fence->cl_event)
-      driscreen->opencl_dri_event_release(fence->cl_event);
-   else
-      assert(0);
-
-   FREE(fence);
-}
-
-static GLboolean
-dri2_client_wait_sync(__DRIcontext *_ctx, void *_fence, unsigned flags,
-                      uint64_t timeout)
-{
-   struct dri2_fence *fence = (struct dri2_fence*)_fence;
-   struct dri_screen *driscreen = fence->driscreen;
-   struct pipe_screen *screen = driscreen->base.screen;
-
-   /* No need to flush. The context was flushed when the fence was created. */
-
-   if (fence->pipe_fence)
-      return screen->fence_finish(screen, NULL, fence->pipe_fence, timeout);
-   else if (fence->cl_event) {
-      struct pipe_fence_handle *pipe_fence =
-         driscreen->opencl_dri_event_get_fence(fence->cl_event);
-
-      if (pipe_fence)
-         return screen->fence_finish(screen, NULL, pipe_fence, timeout);
-      else
-         return driscreen->opencl_dri_event_wait(fence->cl_event, timeout);
-   }
-   else {
-      assert(0);
-      return false;
-   }
-}
-
-static void
-dri2_server_wait_sync(__DRIcontext *_ctx, void *_fence, unsigned flags)
-{
-   /* AFAIK, no driver currently supports parallel context execution. */
-}
-
-static __DRI2fenceExtension dri2FenceExtension = {
-   .base = { __DRI2_FENCE, 1 },
-
-   .create_fence = dri2_create_fence,
-   .get_fence_from_cl_event = dri2_get_fence_from_cl_event,
-   .destroy_fence = dri2_destroy_fence,
-   .client_wait_sync = dri2_client_wait_sync,
-   .server_wait_sync = dri2_server_wait_sync
 };
 
 static const __DRIrobustnessExtension dri2Robustness = {
@@ -1674,7 +1772,7 @@ dri2_interop_export_object(__DRIcontext *_ctx,
          return MESA_GLINTEROP_INVALID_MIP_LEVEL;
       }
 
-      if (!st_finalize_texture(ctx, st->pipe, obj)) {
+      if (!st_finalize_texture(ctx, st->pipe, obj, 0)) {
          mtx_unlock(&ctx->Shared->Mutex);
          return MESA_GLINTEROP_OUT_OF_RESOURCES;
       }
@@ -1746,6 +1844,69 @@ static const __DRI2interopExtension dri2InteropExtension = {
    .export_object = dri2_interop_export_object
 };
 
+/**
+ * \brief the DRI2ConfigQueryExtension configQueryb method
+ */
+static int
+dri2GalliumConfigQueryb(__DRIscreen *sPriv, const char *var,
+                        unsigned char *val)
+{
+   struct dri_screen *screen = dri_screen(sPriv);
+
+   if (!driCheckOption(&screen->dev->option_cache, var, DRI_BOOL))
+      return dri2ConfigQueryExtension.configQueryb(sPriv, var, val);
+
+   *val = driQueryOptionb(&screen->dev->option_cache, var);
+
+   return 0;
+}
+
+/**
+ * \brief the DRI2ConfigQueryExtension configQueryi method
+ */
+static int
+dri2GalliumConfigQueryi(__DRIscreen *sPriv, const char *var, int *val)
+{
+   struct dri_screen *screen = dri_screen(sPriv);
+
+   if (!driCheckOption(&screen->dev->option_cache, var, DRI_INT) &&
+       !driCheckOption(&screen->dev->option_cache, var, DRI_ENUM))
+      return dri2ConfigQueryExtension.configQueryi(sPriv, var, val);
+
+    *val = driQueryOptioni(&screen->dev->option_cache, var);
+
+    return 0;
+}
+
+/**
+ * \brief the DRI2ConfigQueryExtension configQueryf method
+ */
+static int
+dri2GalliumConfigQueryf(__DRIscreen *sPriv, const char *var, float *val)
+{
+   struct dri_screen *screen = dri_screen(sPriv);
+
+   if (!driCheckOption(&screen->dev->option_cache, var, DRI_FLOAT))
+      return dri2ConfigQueryExtension.configQueryf(sPriv, var, val);
+
+    *val = driQueryOptionf(&screen->dev->option_cache, var);
+
+    return 0;
+}
+
+/**
+ * \brief the DRI2ConfigQueryExtension struct.
+ *
+ * We first query the driver option cache. Then the dri2 option cache.
+ */
+static const __DRI2configQueryExtension dri2GalliumConfigQueryExtension = {
+   .base = { __DRI2_CONFIG_QUERY, 1 },
+
+   .configQueryb        = dri2GalliumConfigQueryb,
+   .configQueryi        = dri2GalliumConfigQueryi,
+   .configQueryf        = dri2GalliumConfigQueryf,
+};
+
 /*
  * Backend function init_screen.
  */
@@ -1755,10 +1916,11 @@ static const __DRIextension *dri_screen_extensions[] = {
    &dri2FlushExtension.base,
    &dri2ImageExtension.base,
    &dri2RendererQueryExtension.base,
-   &dri2ConfigQueryExtension.base,
+   &dri2GalliumConfigQueryExtension.base,
    &dri2ThrottleExtension.base,
    &dri2FenceExtension.base,
    &dri2InteropExtension.base,
+   &dri2NoErrorExtension.base,
    NULL
 };
 
@@ -1767,11 +1929,12 @@ static const __DRIextension *dri_robust_screen_extensions[] = {
    &dri2FlushExtension.base,
    &dri2ImageExtension.base,
    &dri2RendererQueryExtension.base,
-   &dri2ConfigQueryExtension.base,
+   &dri2GalliumConfigQueryExtension.base,
    &dri2ThrottleExtension.base,
    &dri2FenceExtension.base,
    &dri2InteropExtension.base,
    &dri2Robustness.base,
+   &dri2NoErrorExtension.base,
    NULL
 };
 
@@ -1796,15 +1959,19 @@ dri2_init_screen(__DRIscreen * sPriv)
 
    screen->sPriv = sPriv;
    screen->fd = sPriv->fd;
-   pipe_mutex_init(screen->opencl_func_mutex);
+   (void) mtx_init(&screen->opencl_func_mutex, mtx_plain);
 
    sPriv->driverPrivate = (void *)screen;
 
-   if (screen->fd < 0 || (fd = dup(screen->fd)) < 0)
+   if (screen->fd < 0 || (fd = fcntl(screen->fd, F_DUPFD_CLOEXEC, 3)) < 0)
       goto free_screen;
 
-   if (pipe_loader_drm_probe_fd(&screen->dev, fd))
+
+   if (pipe_loader_drm_probe_fd(&screen->dev, fd)) {
+      dri_init_options(screen);
+
       pscreen = pipe_loader_create_screen(screen->dev);
+   }
 
    if (!pscreen)
        goto release_pipe;
@@ -1817,6 +1984,10 @@ dri2_init_screen(__DRIscreen * sPriv)
       screen->default_throttle_frames = throttle_ret->val.val_int;
    }
 
+   if (pscreen->resource_create_with_modifiers)
+      dri2ImageExtension.createImageWithModifiers =
+         dri2_create_image_with_modifiers;
+
    if (dmabuf_ret && dmabuf_ret->val.val_bool) {
       uint64_t cap;
 
@@ -1824,6 +1995,10 @@ dri2_init_screen(__DRIscreen * sPriv)
           (cap & DRM_PRIME_CAP_IMPORT)) {
          dri2ImageExtension.createImageFromFds = dri2_from_fds;
          dri2ImageExtension.createImageFromDmaBufs = dri2_from_dma_bufs;
+         dri2ImageExtension.createImageFromDmaBufs2 = dri2_from_dma_bufs2;
+         dri2ImageExtension.queryDmaBufFormats = dri2_query_dma_buf_formats;
+         dri2ImageExtension.queryDmaBufModifiers =
+                                    dri2_query_dma_buf_modifiers;
       }
    }
 
@@ -1834,7 +2009,7 @@ dri2_init_screen(__DRIscreen * sPriv)
    else
       sPriv->extensions = dri_screen_extensions;
 
-   configs = dri_init_screen_helper(screen, pscreen, screen->dev->driver_name);
+   configs = dri_init_screen_helper(screen, pscreen);
    if (!configs)
       goto destroy_screen;
 
@@ -1883,24 +2058,33 @@ dri_kms_init_screen(__DRIscreen * sPriv)
 
    sPriv->driverPrivate = (void *)screen;
 
-   if (screen->fd < 0 || (fd = dup(screen->fd)) < 0)
+   if (screen->fd < 0 || (fd = fcntl(screen->fd, F_DUPFD_CLOEXEC, 3)) < 0)
       goto free_screen;
 
-   if (pipe_loader_sw_probe_kms(&screen->dev, fd))
+   if (pipe_loader_sw_probe_kms(&screen->dev, fd)) {
+      dri_init_options(screen);
       pscreen = pipe_loader_create_screen(screen->dev);
+   }
 
    if (!pscreen)
        goto release_pipe;
+
+   if (pscreen->resource_create_with_modifiers)
+      dri2ImageExtension.createImageWithModifiers =
+         dri2_create_image_with_modifiers;
 
    if (drmGetCap(sPriv->fd, DRM_CAP_PRIME, &cap) == 0 &&
           (cap & DRM_PRIME_CAP_IMPORT)) {
       dri2ImageExtension.createImageFromFds = dri2_from_fds;
       dri2ImageExtension.createImageFromDmaBufs = dri2_from_dma_bufs;
+      dri2ImageExtension.createImageFromDmaBufs2 = dri2_from_dma_bufs2;
+      dri2ImageExtension.queryDmaBufFormats = dri2_query_dma_buf_formats;
+      dri2ImageExtension.queryDmaBufModifiers = dri2_query_dma_buf_modifiers;
    }
 
    sPriv->extensions = dri_screen_extensions;
 
-   configs = dri_init_screen_helper(screen, pscreen, "swrast");
+   configs = dri_init_screen_helper(screen, pscreen);
    if (!configs)
       goto destroy_screen;
 
@@ -1941,6 +2125,7 @@ dri2_create_buffer(__DRIscreen * sPriv,
    drawable->allocate_textures = dri2_allocate_textures;
    drawable->flush_frontbuffer = dri2_flush_frontbuffer;
    drawable->update_tex_buffer = dri2_update_tex_buffer;
+   drawable->flush_swapbuffers = dri2_flush_swapbuffers;
 
    return TRUE;
 }
@@ -1991,7 +2176,6 @@ const __DRIextension *galliumdrm_driver_extensions[] = {
     &driImageDriverExtension.base,
     &driDRI2Extension.base,
     &gallium_config_options.base,
-    &dri2FenceExtension.base,
     NULL
 };
 

@@ -111,7 +111,7 @@ NineCubeTexture9_ctor( struct NineCubeTexture9 *This,
         face_size = nine_format_get_size_and_offsets(pf, level_offsets,
                                                      EdgeLength, EdgeLength,
                                                      info->last_level);
-        This->managed_buffer = align_malloc(6 * face_size, 32);
+        This->managed_buffer = align_calloc(6 * face_size, 32);
         if (!This->managed_buffer)
             return E_OUTOFMEMORY;
     }
@@ -173,7 +173,7 @@ NineCubeTexture9_dtor( struct NineCubeTexture9 *This )
     DBG("This=%p\n", This);
 
     if (This->surfaces) {
-        for (i = 0; i < This->base.base.info.last_level * 6; ++i)
+        for (i = 0; i < (This->base.base.info.last_level + 1) * 6; ++i)
             NineUnknown_Destroy(&This->surfaces[i]->base.base);
         FREE(This->surfaces);
     }
@@ -285,10 +285,14 @@ NineCubeTexture9_AddDirtyRect( struct NineCubeTexture9 *This,
                         This->base.base.info.height0,
                         &This->dirty_rect[FaceType]);
     } else {
-        struct pipe_box box;
-        rect_to_pipe_box_clamp(&box, pDirtyRect);
-        u_box_union_2d(&This->dirty_rect[FaceType], &This->dirty_rect[FaceType],
-                       &box);
+        if (This->dirty_rect[FaceType].width == 0) {
+            rect_to_pipe_box_clamp(&This->dirty_rect[FaceType], pDirtyRect);
+        } else {
+            struct pipe_box box;
+            rect_to_pipe_box_clamp(&box, pDirtyRect);
+            u_box_union_2d(&This->dirty_rect[FaceType], &This->dirty_rect[FaceType],
+                           &box);
+        }
         (void) u_box_clip_2d(&This->dirty_rect[FaceType],
                              &This->dirty_rect[FaceType],
                              This->base.base.info.width0,
@@ -302,9 +306,9 @@ IDirect3DCubeTexture9Vtbl NineCubeTexture9_vtable = {
     (void *)NineUnknown_AddRef,
     (void *)NineUnknown_Release,
     (void *)NineUnknown_GetDevice, /* actually part of Resource9 iface */
-    (void *)NineResource9_SetPrivateData,
-    (void *)NineResource9_GetPrivateData,
-    (void *)NineResource9_FreePrivateData,
+    (void *)NineUnknown_SetPrivateData,
+    (void *)NineUnknown_GetPrivateData,
+    (void *)NineUnknown_FreePrivateData,
     (void *)NineResource9_SetPriority,
     (void *)NineResource9_GetPriority,
     (void *)NineBaseTexture9_PreLoad,

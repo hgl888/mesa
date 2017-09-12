@@ -264,6 +264,13 @@ glx_display_free(struct glx_display *priv)
       (*priv->dri3Display->destroyDisplay) (priv->dri3Display);
    priv->dri3Display = NULL;
 #endif /* GLX_USE_DRM */
+
+#if defined(GLX_USE_WINDOWSGL)
+   if (priv->windowsdriDisplay)
+      (*priv->windowsdriDisplay->destroyDisplay) (priv->windowsdriDisplay);
+   priv->windowsdriDisplay = NULL;
+#endif /* GLX_USE_WINDOWSGL */
+
 #endif /* GLX_DIRECT_RENDERING && !GLX_USE_APPLEGL */
 
    free((char *) priv);
@@ -517,7 +524,17 @@ __glXInitializeVisualConfigFromTags(struct glx_config * config, int count,
          config->visualSelectGroup = *bp++;
          break;
       case GLX_SWAP_METHOD_OML:
-         config->swapMethod = *bp++;
+         if (*bp == GLX_SWAP_UNDEFINED_OML ||
+             *bp == GLX_SWAP_COPY_OML ||
+             *bp == GLX_SWAP_EXCHANGE_OML) {
+            config->swapMethod = *bp++;
+         } else {
+            /* X servers with old HW drivers may return any value here, so
+             * assume GLX_SWAP_METHOD_UNDEFINED.
+             */
+            config->swapMethod = GLX_SWAP_UNDEFINED_OML;
+            bp++;
+         }
          break;
 #endif
       case GLX_SAMPLE_BUFFERS_SGIS:
@@ -592,7 +609,7 @@ __glXInitializeVisualConfigFromTags(struct glx_config * config, int count,
     *     GLXPbuffer drawables."
     */
    if (config->floatMode)
-      config->drawableType &= ~(GLX_WINDOW_BIT|GLX_PIXMAP_BIT);
+      config->drawableType &= GLX_PBUFFER_BIT;
 }
 
 static struct glx_config *
@@ -741,8 +758,11 @@ glx_screen_init(struct glx_screen *psc,
    psc->dpy = priv->dpy;
    psc->display = priv;
 
-   getVisualConfigs(psc, priv, screen);
-   getFBConfigs(psc, priv, screen);
+   if (!getVisualConfigs(psc, priv, screen))
+      return GL_FALSE;
+
+   if (!getFBConfigs(psc, priv, screen))
+      return GL_FALSE;
 
    return GL_TRUE;
 }
@@ -800,6 +820,12 @@ AllocAndFetchScreenConfigs(Display * dpy, struct glx_display * priv)
       if (psc == NULL && priv->driDisplay)
 	 psc = (*priv->driDisplay->createScreen) (i, priv);
 #endif /* GLX_USE_DRM */
+
+#ifdef GLX_USE_WINDOWSGL
+      if (psc == NULL && priv->windowsdriDisplay)
+	 psc = (*priv->windowsdriDisplay->createScreen) (i, priv);
+#endif
+
       if (psc == NULL && priv->driswDisplay)
 	 psc = (*priv->driswDisplay->createScreen) (i, priv);
 #endif /* GLX_DIRECT_RENDERING && !GLX_USE_APPLEGL */
@@ -907,6 +933,12 @@ __glXInitialize(Display * dpy)
       return NULL;
    }
 #endif
+
+#ifdef GLX_USE_WINDOWSGL
+   if (glx_direct && glx_accel)
+      dpyPriv->windowsdriDisplay = driwindowsCreateDisplay(dpy);
+#endif
+
    if (!AllocAndFetchScreenConfigs(dpy, dpyPriv)) {
       free(dpyPriv);
       return NULL;

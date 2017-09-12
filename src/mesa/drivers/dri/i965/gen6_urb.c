@@ -52,6 +52,7 @@ gen6_upload_urb(struct brw_context *brw, unsigned vs_size,
 {
    int nr_vs_entries, nr_gs_entries;
    int total_urb_size = brw->urb.size * 1024; /* in bytes */
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
    /* Calculate how many entries fit in each stage's section of the URB */
    if (gs_present) {
@@ -63,17 +64,18 @@ gen6_upload_urb(struct brw_context *brw, unsigned vs_size,
    }
 
    /* Then clamp to the maximum allowed by the hardware */
-   if (nr_vs_entries > brw->urb.max_vs_entries)
-      nr_vs_entries = brw->urb.max_vs_entries;
+   if (nr_vs_entries > devinfo->urb.max_entries[MESA_SHADER_VERTEX])
+      nr_vs_entries = devinfo->urb.max_entries[MESA_SHADER_VERTEX];
 
-   if (nr_gs_entries > brw->urb.max_gs_entries)
-      nr_gs_entries = brw->urb.max_gs_entries;
+   if (nr_gs_entries > devinfo->urb.max_entries[MESA_SHADER_GEOMETRY])
+      nr_gs_entries = devinfo->urb.max_entries[MESA_SHADER_GEOMETRY];
 
    /* Finally, both must be a multiple of 4 (see 3DSTATE_URB in the PRM). */
    brw->urb.nr_vs_entries = ROUND_DOWN_TO(nr_vs_entries, 4);
    brw->urb.nr_gs_entries = ROUND_DOWN_TO(nr_gs_entries, 4);
 
-   assert(brw->urb.nr_vs_entries >= brw->urb.min_vs_entries);
+   assert(brw->urb.nr_vs_entries >=
+          devinfo->urb.min_entries[MESA_SHADER_VERTEX]);
    assert(brw->urb.nr_vs_entries % 4 == 0);
    assert(brw->urb.nr_gs_entries % 4 == 0);
    assert(vs_size <= 5);
@@ -108,7 +110,9 @@ static void
 upload_urb(struct brw_context *brw)
 {
    /* BRW_NEW_VS_PROG_DATA */
-   const unsigned vs_size = MAX2(brw->vs.prog_data->base.urb_entry_size, 1);
+   const struct brw_vue_prog_data *vs_vue_prog_data =
+      brw_vue_prog_data(brw->vs.base.prog_data);
+   const unsigned vs_size = MAX2(vs_vue_prog_data->urb_entry_size, 1);
 
    /* BRW_NEW_GEOMETRY_PROGRAM, BRW_NEW_GS_PROG_DATA */
    const bool gs_present = brw->ff_gs.prog_active || brw->geometry_program;
@@ -125,7 +129,9 @@ upload_urb(struct brw_context *brw)
     */
    unsigned gs_size = vs_size;
    if (brw->geometry_program) {
-      gs_size = brw->gs.prog_data->base.urb_entry_size;
+      const struct brw_vue_prog_data *gs_vue_prog_data =
+         brw_vue_prog_data(brw->gs.base.prog_data);
+      gs_size = gs_vue_prog_data->urb_entry_size;
       assert(gs_size >= 1);
    }
 

@@ -820,7 +820,7 @@ glXSwapBuffers(Display * dpy, GLXDrawable drawable)
 {
 #ifdef GLX_USE_APPLEGL
    struct glx_context * gc = __glXGetCurrentContext();
-   if(gc != &DummyContext && apple_glx_is_current_drawable(dpy, gc->driContext, drawable)) {
+   if(gc != &dummyContext && apple_glx_is_current_drawable(dpy, gc->driContext, drawable)) {
       apple_glx_swap_buffers(gc->driContext);
    } else {
       __glXSendError(dpy, GLXBadCurrentWindow, 0, X_GLXSwapBuffers, false);
@@ -1014,6 +1014,7 @@ fbconfigs_compatible(const struct glx_config * const a,
 
    MATCH_MASK(drawableType);
    MATCH_MASK(renderType);
+   MATCH_DONT_CARE(sRGBCapable);
 
    /* There is a bug in a few of the XFree86 DDX drivers.  They contain
     * visuals with a "transparent type" of 0 when they really mean GLX_NONE.
@@ -1162,8 +1163,8 @@ fbconfig_compare(struct glx_config **a, struct glx_config **b)
 
 /**
  * Selects and sorts a subset of the supplied configs based on the attributes.
- * This function forms to basis of \c glXChooseVisual, \c glXChooseFBConfig,
- * and \c glXChooseFBConfigSGIX.
+ * This function forms to basis of \c glXChooseFBConfig and
+ * \c glXChooseFBConfigSGIX.
  *
  * \param configs   Array of pointers to possible configs.  The elements of
  *                  this array that do not meet the criteria will be set to
@@ -1171,20 +1172,16 @@ fbconfig_compare(struct glx_config **a, struct glx_config **b)
  *                  the various visual / FBConfig selection rules.
  * \param num_configs  Number of elements in the \c configs array.
  * \param attribList   Attributes used select from \c configs.  This array is
- *                     terminated by a \c None tag.  The array can either take
- *                     the form expected by \c glXChooseVisual (where boolean
- *                     tags do not have a value) or by \c glXChooseFBConfig
- *                     (where every tag has a value).
- * \param fbconfig_style_tags  Selects whether \c attribList is in
- *                             \c glXChooseVisual style or
- *                             \c glXChooseFBConfig style.
+ *                     terminated by a \c None tag.  The array is of the form
+ *                     expected by \c glXChooseFBConfig (where every tag has a
+ *                     value).
  * \returns The number of valid elements left in \c configs.
  *
- * \sa glXChooseVisual, glXChooseFBConfig, glXChooseFBConfigSGIX
+ * \sa glXChooseFBConfig, glXChooseFBConfigSGIX
  */
 static int
-choose_visual(struct glx_config ** configs, int num_configs,
-              const int *attribList, GLboolean fbconfig_style_tags)
+choose_fbconfig(struct glx_config ** configs, int num_configs,
+              const int *attribList)
 {
    struct glx_config test_config;
    int base;
@@ -1196,10 +1193,10 @@ choose_visual(struct glx_config ** configs, int num_configs,
     * list.
     */
 
-   init_fbconfig_for_chooser(&test_config, fbconfig_style_tags);
+   init_fbconfig_for_chooser(&test_config, GL_TRUE);
    __glXInitializeVisualConfigFromTags(&test_config, 512,
                                        (const INT32 *) attribList,
-                                       GL_TRUE, fbconfig_style_tags);
+                                       GL_TRUE, GL_TRUE);
 
    base = 0;
    for (i = 0; i < num_configs; i++) {
@@ -1613,7 +1610,7 @@ glXChooseFBConfig(Display * dpy, int screen,
       glXGetFBConfigs(dpy, screen, &list_size);
 
    if ((config_list != NULL) && (list_size > 0) && (attribList != NULL)) {
-      list_size = choose_visual(config_list, list_size, attribList, GL_TRUE);
+      list_size = choose_fbconfig(config_list, list_size, attribList);
       if (list_size == 0) {
          free(config_list);
          config_list = NULL;
@@ -1630,7 +1627,6 @@ glXCreateNewContext(Display * dpy, GLXFBConfig fbconfig,
                     int renderType, GLXContext shareList, Bool allowDirect)
 {
    struct glx_config *config = (struct glx_config *) fbconfig;
-   int screen = DefaultScreen(dpy);
    struct glx_config **config_list;
    int list_size;
    unsigned i;
@@ -1641,7 +1637,7 @@ glXCreateNewContext(Display * dpy, GLXFBConfig fbconfig,
    }
 
    config_list = (struct glx_config **)
-      glXGetFBConfigs(dpy, screen, &list_size);
+      glXGetFBConfigs(dpy, config->screen, &list_size);
 
    for (i = 0; i < list_size; i++) {
        if (config_list[i] == config)
@@ -1766,7 +1762,11 @@ __glXSwapIntervalSGI(int interval)
           psc->driScreen->setSwapInterval) {
       __GLXDRIdrawable *pdraw =
 	 GetGLXDRIDrawable(gc->currentDpy, gc->currentDrawable);
-      psc->driScreen->setSwapInterval(pdraw, interval);
+      /* Simply ignore the command if the GLX drawable has been destroyed but
+       * the context is still bound.
+       */
+      if (pdraw)
+         psc->driScreen->setSwapInterval(pdraw, interval);
       return 0;
    }
 #endif
@@ -1812,7 +1812,14 @@ __glXSwapIntervalMESA(unsigned int interval)
       if (psc && psc->driScreen && psc->driScreen->setSwapInterval) {
          __GLXDRIdrawable *pdraw =
 	    GetGLXDRIDrawable(gc->currentDpy, gc->currentDrawable);
-	 return psc->driScreen->setSwapInterval(pdraw, interval);
+
+         /* Simply ignore the command if the GLX drawable has been destroyed but
+          * the context is still bound.
+          */
+         if (!pdraw)
+            return 0;
+
+         return psc->driScreen->setSwapInterval(pdraw, interval);
       }
    }
 #endif
@@ -1834,7 +1841,8 @@ __glXGetSwapIntervalMESA(void)
       if (psc && psc->driScreen && psc->driScreen->getSwapInterval) {
          __GLXDRIdrawable *pdraw =
 	    GetGLXDRIDrawable(gc->currentDpy, gc->currentDrawable);
-	 return psc->driScreen->getSwapInterval(pdraw);
+         if (pdraw)
+            return psc->driScreen->getSwapInterval(pdraw);
       }
    }
 #endif
@@ -2644,7 +2652,7 @@ _GLX_PUBLIC void (*glXGetProcAddressARB(const GLubyte * procName)) (void)
    f = (gl_function) get_glx_proc_address((const char *) procName);
    if ((f == NULL) && (procName[0] == 'g') && (procName[1] == 'l')
        && (procName[2] != 'X')) {
-#ifdef GLX_SHARED_GLAPI
+#ifdef GLX_INDIRECT_RENDERING
       f = (gl_function) __indirect_get_proc_address((const char *) procName);
 #endif
       if (!f)
@@ -2668,19 +2676,10 @@ _GLX_PUBLIC void (*glXGetProcAddressARB(const GLubyte * procName)) (void)
  *
  * \sa glXGetProcAddressARB
  */
-_GLX_PUBLIC void (*glXGetProcAddress(const GLubyte * procName)) (void)
-#if defined(__GNUC__) && !defined(GLX_ALIAS_UNSUPPORTED)
-# if defined(USE_MGL_NAMESPACE)
-   __attribute__ ((alias("mglXGetProcAddressARB")));
-# else
-   __attribute__ ((alias("glXGetProcAddressARB")));
-# endif
-#else
-{
-   return glXGetProcAddressARB(procName);
-}
-#endif /* __GNUC__ */
-
+_GLX_PUBLIC
+GLX_ALIAS(__GLXextFuncPtr, glXGetProcAddress,
+          (const GLubyte * procName),
+          (procName), glXGetProcAddressARB)
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
 /**
@@ -2718,7 +2717,7 @@ __glXGetUST(int64_t * ust)
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
 
-int
+PUBLIC int
 MesaGLInteropGLXQueryDeviceInfo(Display *dpy, GLXContext context,
                                 struct mesa_glinterop_device_info *out)
 {
@@ -2742,7 +2741,7 @@ MesaGLInteropGLXQueryDeviceInfo(Display *dpy, GLXContext context,
    return ret;
 }
 
-int
+PUBLIC int
 MesaGLInteropGLXExportObject(Display *dpy, GLXContext context,
                              struct mesa_glinterop_export_in *in,
                              struct mesa_glinterop_export_out *out)

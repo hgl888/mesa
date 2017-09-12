@@ -94,6 +94,9 @@ vc4_create_rasterizer_state(struct pipe_context *pctx,
                             const struct pipe_rasterizer_state *cso)
 {
         struct vc4_rasterizer_state *so;
+        struct V3D21_DEPTH_OFFSET depth_offset = { V3D21_DEPTH_OFFSET_header };
+        struct V3D21_POINT_SIZE point_size = { V3D21_POINT_SIZE_header };
+        struct V3D21_LINE_WIDTH line_width = { V3D21_LINE_WIDTH_header };
 
         so = CALLOC_STRUCT(vc4_rasterizer_state);
         if (!so)
@@ -109,7 +112,9 @@ vc4_create_rasterizer_state(struct pipe_context *pctx,
         /* Workaround: HW-2726 PTB does not handle zero-size points (BCM2835,
          * BCM21553).
          */
-        so->point_size = MAX2(cso->point_size, .125f);
+        point_size.point_size = MAX2(cso->point_size, .125f);
+
+        line_width.line_width = cso->line_width;
 
         if (cso->front_ccw)
                 so->config_bits[0] |= VC4_CONFIG_BITS_CW_PRIMITIVES;
@@ -117,12 +122,18 @@ vc4_create_rasterizer_state(struct pipe_context *pctx,
         if (cso->offset_tri) {
                 so->config_bits[0] |= VC4_CONFIG_BITS_ENABLE_DEPTH_OFFSET;
 
-                so->offset_units = float_to_187_half(cso->offset_units);
-                so->offset_factor = float_to_187_half(cso->offset_scale);
+                depth_offset.depth_offset_units =
+                        float_to_187_half(cso->offset_units);
+                depth_offset.depth_offset_factor =
+                        float_to_187_half(cso->offset_scale);
         }
 
         if (cso->multisample)
                 so->config_bits[0] |= VC4_CONFIG_BITS_RASTERIZER_OVERSAMPLE_4X;
+
+        V3D21_DEPTH_OFFSET_pack(NULL, so->packed.depth_offset, &depth_offset);
+        V3D21_POINT_SIZE_pack(NULL, so->packed.point_size, &point_size);
+        V3D21_LINE_WIDTH_pack(NULL, so->packed.line_width, &line_width);
 
         return so;
 }
@@ -302,24 +313,6 @@ vc4_set_vertex_buffers(struct pipe_context *pctx,
 }
 
 static void
-vc4_set_index_buffer(struct pipe_context *pctx,
-                     const struct pipe_index_buffer *ib)
-{
-        struct vc4_context *vc4 = vc4_context(pctx);
-
-        if (ib) {
-                pipe_resource_reference(&vc4->indexbuf.buffer, ib->buffer);
-                vc4->indexbuf.index_size = ib->index_size;
-                vc4->indexbuf.offset = ib->offset;
-                vc4->indexbuf.user_buffer = ib->user_buffer;
-        } else {
-                pipe_resource_reference(&vc4->indexbuf.buffer, NULL);
-        }
-
-        vc4->dirty |= VC4_DIRTY_INDEXBUF;
-}
-
-static void
 vc4_blend_state_bind(struct pipe_context *pctx, void *hwcso)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
@@ -374,7 +367,8 @@ vc4_vertex_state_bind(struct pipe_context *pctx, void *hwcso)
 }
 
 static void
-vc4_set_constant_buffer(struct pipe_context *pctx, uint shader, uint index,
+vc4_set_constant_buffer(struct pipe_context *pctx,
+                        enum pipe_shader_type shader, uint index,
                         const struct pipe_constant_buffer *cb)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
@@ -409,7 +403,7 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
         struct pipe_framebuffer_state *cso = &vc4->framebuffer;
         unsigned i;
 
-        vc4_flush(pctx);
+        vc4->job = NULL;
 
         for (i = 0; i < framebuffer->nr_cbufs; i++)
                 pipe_surface_reference(&cso->cbufs[i], framebuffer->cbufs[i]);
@@ -422,23 +416,6 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
 
         cso->width = framebuffer->width;
         cso->height = framebuffer->height;
-
-        /* If we're binding to uninitialized buffers, no need to load their
-         * contents before drawing..
-         */
-        if (cso->cbufs[0]) {
-                struct vc4_resource *rsc =
-                        vc4_resource(cso->cbufs[0]->texture);
-                if (!rsc->writes)
-                        vc4->cleared |= PIPE_CLEAR_COLOR0;
-        }
-
-        if (cso->zsbuf) {
-                struct vc4_resource *rsc =
-                        vc4_resource(cso->zsbuf->texture);
-                if (!rsc->writes)
-                        vc4->cleared |= PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL;
-        }
 
         /* Nonzero texture mipmap levels are laid out as if they were in
          * power-of-two-sized spaces.  The renderbuffer config infers its
@@ -459,22 +436,6 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
                         (rsc->slices[cso->zsbuf->u.tex.level].stride /
                          rsc->cpp);
         }
-
-        vc4->msaa = false;
-        if (cso->cbufs[0])
-                vc4->msaa = cso->cbufs[0]->texture->nr_samples > 1;
-        else if (cso->zsbuf)
-                vc4->msaa = cso->zsbuf->texture->nr_samples > 1;
-
-        if (vc4->msaa) {
-                vc4->tile_width = 32;
-                vc4->tile_height = 32;
-        } else {
-                vc4->tile_width = 64;
-                vc4->tile_height = 64;
-        }
-        vc4->draw_tiles_x = DIV_ROUND_UP(cso->width, vc4->tile_width);
-        vc4->draw_tiles_y = DIV_ROUND_UP(cso->height, vc4->tile_height);
 
         vc4->dirty |= VC4_DIRTY_FRAMEBUFFER;
 }
@@ -607,7 +568,7 @@ vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
              (cso->u.tex.first_level != cso->u.tex.last_level)) ||
             rsc->vc4_format == VC4_TEXTURE_TYPE_RGBA32R) {
                 struct vc4_resource *shadow_parent = vc4_resource(prsc);
-                struct pipe_resource tmpl = shadow_parent->base.b;
+                struct pipe_resource tmpl = shadow_parent->base;
                 struct vc4_resource *clone;
 
                 tmpl.bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
@@ -622,7 +583,7 @@ vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                 }
                 rsc = vc4_resource(prsc);
                 clone = vc4_resource(prsc);
-                clone->shadow_parent = &shadow_parent->base.b;
+                clone->shadow_parent = &shadow_parent->base;
                 /* Flag it as needing update of the contents from the parent. */
                 clone->writes = shadow_parent->writes - 1;
 
@@ -647,6 +608,9 @@ vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                 (VC4_SET_FIELD(rsc->vc4_format >> 4, VC4_TEX_P1_TYPE4) |
                  VC4_SET_FIELD(prsc->height0 & 2047, VC4_TEX_P1_HEIGHT) |
                  VC4_SET_FIELD(prsc->width0 & 2047, VC4_TEX_P1_WIDTH));
+
+        if (prsc->format == PIPE_FORMAT_ETC1_RGB8)
+                so->texture_p1 |= VC4_TEX_P1_ETCFLIP_MASK;
 
         return &so->base;
 }
@@ -699,7 +663,6 @@ vc4_state_init(struct pipe_context *pctx)
         pctx->set_viewport_states = vc4_set_viewport_states;
 
         pctx->set_vertex_buffers = vc4_set_vertex_buffers;
-        pctx->set_index_buffer = vc4_set_index_buffer;
 
         pctx->create_blend_state = vc4_create_blend_state;
         pctx->bind_blend_state = vc4_blend_state_bind;

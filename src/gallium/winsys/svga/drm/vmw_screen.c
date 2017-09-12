@@ -39,6 +39,7 @@
 #endif
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 static struct util_hash_table *dev_hash = NULL;
 
@@ -88,7 +89,7 @@ vmw_winsys_create( int fd )
 
    vws->device = stat_buf.st_rdev;
    vws->open_count = 1;
-   vws->ioctl.drm_fd = dup(fd);
+   vws->ioctl.drm_fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
    vws->base.have_gb_dma = TRUE;
    vws->base.need_to_rebind_resources = FALSE;
 
@@ -107,6 +108,9 @@ vmw_winsys_create( int fd )
 
    if (util_hash_table_set(dev_hash, &vws->device, vws) != PIPE_OK)
       goto out_no_hash_insert;
+
+   cnd_init(&vws->cs_cond);
+   mtx_init(&vws->cs_mutex, mtx_plain);
 
    return vws;
 out_no_hash_insert:
@@ -132,6 +136,8 @@ vmw_winsys_destroy(struct vmw_winsys_screen *vws)
       vws->fence_ops->destroy(vws->fence_ops);
       vmw_ioctl_cleanup(vws);
       close(vws->ioctl.drm_fd);
+      mtx_destroy(&vws->cs_mutex);
+      cnd_destroy(&vws->cs_cond);
       FREE(vws);
    }
 }

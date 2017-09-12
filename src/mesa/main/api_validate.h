@@ -35,8 +35,11 @@ struct gl_context;
 struct gl_transform_feedback_object;
 
 
+extern GLboolean
+_mesa_valid_to_render(struct gl_context *ctx, const char *where);
+
 extern bool
-_mesa_is_valid_prim_mode(struct gl_context *ctx, GLenum mode);
+_mesa_is_valid_prim_mode(const struct gl_context *ctx, GLenum mode);
 
 extern GLboolean
 _mesa_valid_prim_mode(struct gl_context *ctx, GLenum mode, const char *name);
@@ -44,6 +47,10 @@ _mesa_valid_prim_mode(struct gl_context *ctx, GLenum mode, const char *name);
 
 extern GLboolean
 _mesa_validate_DrawArrays(struct gl_context *ctx, GLenum mode, GLsizei count);
+
+extern bool
+_mesa_validate_MultiDrawArrays(struct gl_context *ctx, GLenum mode,
+                               const GLsizei *count, GLsizei primcount);
 
 extern GLboolean
 _mesa_validate_DrawElements(struct gl_context *ctx,
@@ -54,7 +61,7 @@ extern GLboolean
 _mesa_validate_MultiDrawElements(struct gl_context *ctx,
                                  GLenum mode, const GLsizei *count,
                                  GLenum type, const GLvoid * const *indices,
-                                 GLuint primcount);
+                                 GLsizei primcount);
 
 extern GLboolean
 _mesa_validate_DrawRangeElements(struct gl_context *ctx, GLenum mode,
@@ -120,14 +127,5 @@ _mesa_validate_MultiDrawElementsIndirectCount(struct gl_context *ctx,
                                               GLintptr drawcount,
                                               GLsizei maxdrawcount,
                                               GLsizei stride);
-
-extern GLboolean
-_mesa_validate_DispatchCompute(struct gl_context *ctx,
-                               const GLuint *num_groups);
-
-extern GLboolean
-_mesa_validate_DispatchComputeIndirect(struct gl_context *ctx,
-                                       GLintptr indirect);
-
 
 #endif

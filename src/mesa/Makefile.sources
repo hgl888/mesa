@@ -85,6 +85,8 @@ MAIN_FILES = \
 	main/extensions.h \
 	main/extensions_table.c \
 	main/extensions_table.h \
+	main/externalobjects.c \
+	main/externalobjects.h \
 	main/fbobject.c \
 	main/fbobject.h \
 	main/feedback.c \
@@ -94,6 +96,7 @@ MAIN_FILES = \
 	main/ffvertex_prog.h \
 	main/fog.c \
 	main/fog.h \
+	main/format_fallback.c \
 	main/format_info.h \
 	main/format_pack.h \
 	main/format_pack.c \
@@ -115,6 +118,8 @@ MAIN_FILES = \
 	main/getstring.c \
 	main/glformats.c \
 	main/glformats.h \
+	main/glthread.c \
+	main/glthread.h \
 	main/glheader.h \
 	main/hash.c \
 	main/hash.h \
@@ -131,6 +136,10 @@ MAIN_FILES = \
 	main/lines.c \
 	main/lines.h \
 	main/macros.h \
+	main/marshal.c \
+	main/marshal.h \
+	main/marshal_generated.c \
+	main/marshal_generated.h \
 	main/matrix.c \
 	main/matrix.h \
 	main/mipmap.c \
@@ -150,6 +159,8 @@ MAIN_FILES = \
 	main/pbo.h \
 	main/performance_monitor.c \
 	main/performance_monitor.h \
+	main/performance_query.c \
+	main/performance_query.h \
 	main/pipelineobj.c \
 	main/pipelineobj.h \
 	main/pixel.c \
@@ -232,6 +243,8 @@ MAIN_FILES = \
 	main/texstorage.h \
 	main/texstore.c \
 	main/texstore.h \
+	main/texturebindless.c \
+	main/texturebindless.h \
 	main/textureview.c \
 	main/textureview.h \
 	main/transformfeedback.c \
@@ -425,7 +438,6 @@ STATETRACKER_FILES = \
 	state_tracker/st_atom_tess.c \
 	state_tracker/st_atom_texture.c \
 	state_tracker/st_atom_viewport.c \
-	state_tracker/st_cache.h \
 	state_tracker/st_cb_bitmap.c \
 	state_tracker/st_cb_bitmap.h \
 	state_tracker/st_cb_bitmap_shader.c \
@@ -454,6 +466,8 @@ STATETRACKER_FILES = \
 	state_tracker/st_cb_feedback.h \
 	state_tracker/st_cb_flush.c \
 	state_tracker/st_cb_flush.h \
+	state_tracker/st_cb_memoryobjects.c \
+	state_tracker/st_cb_memoryobjects.h \
 	state_tracker/st_cb_msaa.c \
 	state_tracker/st_cb_msaa.h \
 	state_tracker/st_cb_perfmon.c \
@@ -497,6 +511,10 @@ STATETRACKER_FILES = \
 	state_tracker/st_glsl_to_nir.cpp \
 	state_tracker/st_glsl_to_tgsi.cpp \
 	state_tracker/st_glsl_to_tgsi.h \
+	state_tracker/st_glsl_to_tgsi_private.cpp \
+	state_tracker/st_glsl_to_tgsi_private.h \
+	state_tracker/st_glsl_to_tgsi_temprename.cpp \
+	state_tracker/st_glsl_to_tgsi_temprename.h \
 	state_tracker/st_glsl_types.cpp \
 	state_tracker/st_glsl_types.h \
 	state_tracker/st_manager.c \
@@ -505,14 +523,21 @@ STATETRACKER_FILES = \
 	state_tracker/st_mesa_to_tgsi.h \
 	state_tracker/st_nir.h \
 	state_tracker/st_nir_lower_builtin.c \
+	state_tracker/st_nir_lower_tex_src_plane.c \
 	state_tracker/st_pbo.c \
 	state_tracker/st_pbo.h \
 	state_tracker/st_program.c \
 	state_tracker/st_program.h \
+	state_tracker/st_sampler_view.c \
+	state_tracker/st_sampler_view.h \
 	state_tracker/st_scissor.c \
 	state_tracker/st_scissor.h \
+	state_tracker/st_shader_cache.c \
+	state_tracker/st_shader_cache.h \
 	state_tracker/st_texture.c \
 	state_tracker/st_texture.h \
+	state_tracker/st_tgsi_lower_yuv.c \
+	state_tracker/st_tgsi_lower_yuv.h \
 	state_tracker/st_vdpau.c \
 	state_tracker/st_vdpau.h
 
@@ -616,7 +641,6 @@ COMMON_DRIVER_FILES =			\
 	drivers/common/driverfuncs.c	\
 	drivers/common/driverfuncs.h	\
 	drivers/common/meta_blit.c	\
-	drivers/common/meta_copy_image.c	\
 	drivers/common/meta_generate_mipmap.c	\
 	drivers/common/meta_tex_subimage.c	\
 	drivers/common/meta.c \

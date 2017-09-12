@@ -37,7 +37,6 @@
 
 #include "brw_defines.h"
 #include "brw_context.h"
-#include "brw_eu.h"
 #include "brw_util.h"
 #include "brw_state.h"
 #include "brw_ff_gs.h"
@@ -48,6 +47,7 @@ void
 brw_codegen_ff_gs_prog(struct brw_context *brw,
                        struct brw_ff_gs_prog_key *key)
 {
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    struct brw_ff_gs_compile c;
    const GLuint *program;
    void *mem_ctx;
@@ -56,14 +56,14 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
    memset(&c, 0, sizeof(c));
 
    c.key = *key;
-   c.vue_map = brw->vs.prog_data->base.vue_map;
+   c.vue_map = brw_vue_prog_data(brw->vs.base.prog_data)->vue_map;
    c.nr_regs = (c.vue_map.num_slots + 1)/2;
 
    mem_ctx = ralloc_context(NULL);
 
    /* Begin the compilation:
     */
-   brw_init_codegen(brw->intelScreen->devinfo, &c.func, mem_ctx);
+   brw_init_codegen(&brw->screen->devinfo, &c.func, mem_ctx);
 
    c.func.single_program_flow = 1;
 
@@ -72,7 +72,7 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
     */
    brw_set_default_mask_control(&c.func, BRW_MASK_DISABLE);
 
-   if (brw->gen >= 6) {
+   if (devinfo->gen >= 6) {
       unsigned num_verts;
       bool check_edge_flag;
       /* On Sandybridge, we use the GS for implementing transform feedback
@@ -135,7 +135,7 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_GS)) {
       fprintf(stderr, "gs:\n");
-      brw_disassemble(brw->intelScreen->devinfo, c.func.store,
+      brw_disassemble(&brw->screen->devinfo, c.func.store,
                       0, program_size, stderr);
       fprintf(stderr, "\n");
     }
@@ -162,6 +162,7 @@ static void
 brw_ff_gs_populate_key(struct brw_context *brw,
                        struct brw_ff_gs_prog_key *key)
 {
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    static const unsigned swizzle_for_offset[4] = {
       BRW_SWIZZLE4(0, 1, 2, 3),
       BRW_SWIZZLE4(1, 2, 3, 3),
@@ -171,10 +172,12 @@ brw_ff_gs_populate_key(struct brw_context *brw,
 
    struct gl_context *ctx = &brw->ctx;
 
+   assert(devinfo->gen < 7);
+
    memset(key, 0, sizeof(*key));
 
    /* BRW_NEW_VS_PROG_DATA (part of VUE map) */
-   key->attrs = brw->vs.prog_data->base.vue_map.slots_valid;
+   key->attrs = brw_vue_prog_data(brw->vs.base.prog_data)->vue_map.slots_valid;
 
    /* BRW_NEW_PRIMITIVE */
    key->primitive = brw->primitive;
@@ -188,17 +191,14 @@ brw_ff_gs_populate_key(struct brw_context *brw,
       key->pv_first = true;
    }
 
-   if (brw->gen >= 7) {
-      /* On Gen7 and later, we don't use GS (yet). */
-      key->need_gs_prog = false;
-   } else if (brw->gen == 6) {
+   if (devinfo->gen == 6) {
       /* On Gen6, GS is used for transform feedback. */
       /* BRW_NEW_TRANSFORM_FEEDBACK */
       if (_mesa_is_xfb_active_and_unpaused(ctx)) {
-         const struct gl_shader_program *shaderprog =
+         const struct gl_program *prog =
             ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX];
          const struct gl_transform_feedback_info *linked_xfb_info =
-            &shaderprog->LinkedTransformFeedback;
+            prog->sh.LinkedTransformFeedback;
          int i;
 
          /* Make sure that the VUE slots won't overflow the unsigned chars in
@@ -257,9 +257,4 @@ brw_upload_ff_gs_prog(struct brw_context *brw)
          brw_codegen_ff_gs_prog(brw, &key);
       }
    }
-}
-
-void gen6_brw_upload_ff_gs_prog(struct brw_context *brw)
-{
-   brw_upload_ff_gs_prog(brw);
 }

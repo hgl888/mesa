@@ -37,11 +37,9 @@ namespace nv50_ir {
 #if __cplusplus >= 201103L
 using std::hash;
 using std::unordered_map;
-#elif !defined(ANDROID)
+#else
 using std::tr1::hash;
 using std::tr1::unordered_map;
-#else
-#error Android release before Lollipop is not supported!
 #endif
 
 #define MAX_REGISTER_FILE_SIZE 256
@@ -771,7 +769,7 @@ private:
    bool coalesce(ArrayList&);
    bool doCoalesce(ArrayList&, unsigned int mask);
    void calculateSpillWeights();
-   void simplify();
+   bool simplify();
    bool selectRegisters();
    void cleanup(const bool success);
 
@@ -1305,7 +1303,7 @@ GCRA::simplifyNode(RIG_Node *node)
             (node->degree < node->degreeLimit) ? "" : "(spill)");
 }
 
-void
+bool
 GCRA::simplify()
 {
    for (;;) {
@@ -1330,11 +1328,11 @@ GCRA::simplify()
          }
          if (isinf(bestScore)) {
             ERROR("no viable spill candidates left\n");
-            break;
+            return false;
          }
          simplifyNode(best);
       } else {
-         break;
+         return true;
       }
    }
 }
@@ -1471,7 +1469,7 @@ GCRA::allocateRegisters(ArrayList& insns)
          if (lval->inFile(FILE_GPR) && lval->getInsn() != NULL &&
              prog->getTarget()->getChipset() < 0xc0) {
             Instruction *insn = lval->getInsn();
-            if (insn->op == OP_MAD || insn->op == OP_SAD)
+            if (insn->op == OP_MAD || insn->op == OP_FMA || insn->op == OP_SAD)
                // Short encoding only possible if they're all GPRs, no need to
                // affect them otherwise.
                if (insn->flagsDef < 0 &&
@@ -1493,7 +1491,9 @@ GCRA::allocateRegisters(ArrayList& insns)
 
    buildRIG(insns);
    calculateSpillWeights();
-   simplify();
+   ret = simplify();
+   if (!ret)
+      goto out;
 
    ret = selectRegisters();
    if (!ret) {
@@ -1903,8 +1903,10 @@ GCRA::resolveSplitsAndMerges()
          // their registers should be identical.
          if (v->getInsn()->op == OP_PHI || v->getInsn()->op == OP_UNION) {
             Instruction *phi = v->getInsn();
-            for (int phis = 0; phi->srcExists(phis); ++phis)
+            for (int phis = 0; phi->srcExists(phis); ++phis) {
                phi->getSrc(phis)->join = v;
+               phi->getSrc(phis)->reg.data.id = v->reg.data.id;
+            }
          }
          reg += v->reg.size;
       }

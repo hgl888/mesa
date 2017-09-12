@@ -5,6 +5,7 @@
 #include "pipe/p_compiler.h"
 
 struct pipe_screen;
+struct pipe_screen_config;
 struct pipe_context;
 struct pipe_resource;
 
@@ -45,6 +46,12 @@ struct winsys_handle
     * Output for texture_get_handle.
     */
    unsigned offset;
+
+   /**
+    * Input to resource_from_handle.
+    * Output from resource_get_handle.
+    */
+   uint64_t modifier;
 };
 
 
@@ -57,6 +64,8 @@ enum drm_conf {
    DRM_CONF_THROTTLE, /* DRM_CONF_INT. */
    /* Can this driver, running on this kernel, import and export dma-buf fds? */
    DRM_CONF_SHARE_FD, /* DRM_CONF_BOOL. */
+   /* XML string describing the available config options. */
+   DRM_CONF_XML_OPTIONS, /* DRM_CONF_POINTER */
    DRM_CONF_MAX
 };
 
@@ -86,12 +95,7 @@ struct drm_conf_ret {
 struct drm_driver_descriptor
 {
    /**
-    * Identifying sufix/prefix of the binary, used by egl.
-    */
-   const char *name;
-
-   /**
-    * Kernel driver name, as accepted by drmOpenByName.
+    * Identifying prefix/suffix of the binary, used by the pipe-loader.
     */
    const char *driver_name;
 
@@ -101,8 +105,8 @@ struct drm_driver_descriptor
     * This function does any wrapping of the screen.
     * For example wrapping trace or rbug debugging drivers around it.
     */
-   struct pipe_screen* (*create_screen)(int drm_fd);
-
+   struct pipe_screen* (*create_screen)(int drm_fd,
+                                        const struct pipe_screen_config *config);
 
    /**
     * Return a configuration value.
@@ -114,14 +118,13 @@ struct drm_driver_descriptor
    const struct drm_conf_ret *(*configuration) (enum drm_conf conf);
 };
 
-extern struct drm_driver_descriptor driver_descriptor;
+extern const struct drm_driver_descriptor driver_descriptor;
 
 /**
  * Instantiate a drm_driver_descriptor struct.
  */
-#define DRM_DRIVER_DESCRIPTOR(name_str, driver_name_str, func, conf) \
-struct drm_driver_descriptor driver_descriptor = {             \
-   .name = name_str,                                           \
+#define DRM_DRIVER_DESCRIPTOR(driver_name_str, func, conf) \
+const struct drm_driver_descriptor driver_descriptor = {       \
    .driver_name = driver_name_str,                             \
    .create_screen = func,                                      \
    .configuration = (conf),				       \

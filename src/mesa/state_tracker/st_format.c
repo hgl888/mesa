@@ -58,7 +58,7 @@
  * Translate Mesa format to Gallium format.
  */
 enum pipe_format
-st_mesa_format_to_pipe_format(struct st_context *st, mesa_format mesaFormat)
+st_mesa_format_to_pipe_format(const struct st_context *st, mesa_format mesaFormat)
 {
    switch (mesaFormat) {
    case MESA_FORMAT_A8B8G8R8_UNORM:
@@ -1028,24 +1028,24 @@ test_format_conversion(struct st_context *st)
 
       pf = st_mesa_format_to_pipe_format(st, i);
       if (pf != PIPE_FORMAT_NONE) {
-         mesa_format mf = st_pipe_format_to_mesa_format(pf);
+         mesa_format MAYBE_UNUSED mf = st_pipe_format_to_mesa_format(pf);
          assert(mf == i);
       }
    }
 
    /* Test all Gallium formats */
    for (i = 1; i < PIPE_FORMAT_COUNT; i++) {
-      mesa_format mf = st_pipe_format_to_mesa_format(i);
-
       /* ETC formats are translated differently, skip them. */
       if (i == PIPE_FORMAT_ETC1_RGB8 && !st->has_etc1)
          continue;
 
+      mesa_format mf = st_pipe_format_to_mesa_format(i);
       if (_mesa_is_format_etc2(mf) && !st->has_etc2)
          continue;
 
       if (mf != MESA_FORMAT_NONE) {
-         enum pipe_format pf = st_mesa_format_to_pipe_format(st, mf);
+         enum pipe_format MAYBE_UNUSED pf =
+            st_mesa_format_to_pipe_format(st, mf);
          assert(pf == i);
       }
    }
@@ -1186,7 +1186,7 @@ static const struct format_mapping format_map[] = {
    },
    {
       { 1, GL_LUMINANCE, GL_LUMINANCE4, GL_LUMINANCE8, 0 },
-      { PIPE_FORMAT_L8_UNORM, DEFAULT_RGB_FORMATS }
+      { PIPE_FORMAT_L8_UNORM, PIPE_FORMAT_L8A8_UNORM, DEFAULT_RGB_FORMATS }
    },
 
    /* basic Luminance/Alpha formats */
@@ -1682,101 +1682,101 @@ static const struct format_mapping format_map[] = {
    {
       { GL_ALPHA_INTEGER_EXT,
         GL_ALPHA8I_EXT, 0 },
-      { PIPE_FORMAT_A8_SINT, 0 }
+      { PIPE_FORMAT_A8_SINT, PIPE_FORMAT_R8G8B8A8_SINT, 0 }
    },
    {
       { GL_ALPHA16I_EXT, 0 },
-      { PIPE_FORMAT_A16_SINT, 0 }
+      { PIPE_FORMAT_A16_SINT, PIPE_FORMAT_R16G16B16A16_SINT, 0 }
    },
    {
       { GL_ALPHA32I_EXT, 0 },
-      { PIPE_FORMAT_A32_SINT, 0 }
+      { PIPE_FORMAT_A32_SINT, PIPE_FORMAT_R32G32B32A32_SINT, 0 }
    },
    {
       { GL_ALPHA8UI_EXT, 0 },
-      { PIPE_FORMAT_A8_UINT, 0 }
+      { PIPE_FORMAT_A8_UINT, PIPE_FORMAT_R8G8B8A8_UINT, 0 }
    },
    {
       { GL_ALPHA16UI_EXT, 0 },
-      { PIPE_FORMAT_A16_UINT, 0 }
+      { PIPE_FORMAT_A16_UINT, PIPE_FORMAT_R16G16B16A16_UINT, 0 }
    },
    {
       { GL_ALPHA32UI_EXT, 0 },
-      { PIPE_FORMAT_A32_UINT, 0 }
+      { PIPE_FORMAT_A32_UINT, PIPE_FORMAT_R32G32B32A32_UINT, 0 }
    },
    {
       { GL_INTENSITY8I_EXT, 0 },
-      { PIPE_FORMAT_I8_SINT, 0 }
+      { PIPE_FORMAT_I8_SINT, PIPE_FORMAT_R8G8B8A8_SINT, 0 }
    },
    {
       { GL_INTENSITY16I_EXT, 0 },
-      { PIPE_FORMAT_I16_SINT, 0 }
+      { PIPE_FORMAT_I16_SINT, PIPE_FORMAT_R16G16B16A16_SINT, 0 }
    },
    {
       { GL_INTENSITY32I_EXT, 0 },
-      { PIPE_FORMAT_I32_SINT, 0 }
+      { PIPE_FORMAT_I32_SINT, PIPE_FORMAT_R32G32B32A32_SINT, 0 }
    },
    {
       { GL_INTENSITY8UI_EXT, 0 },
-      { PIPE_FORMAT_I8_UINT, 0 }
+      { PIPE_FORMAT_I8_UINT, PIPE_FORMAT_R8G8B8A8_UINT, 0 }
    },
    {
       { GL_INTENSITY16UI_EXT, 0 },
-      { PIPE_FORMAT_I16_UINT, 0 }
+      { PIPE_FORMAT_I16_UINT, PIPE_FORMAT_R16G16B16A16_UINT, 0 }
    },
    {
       { GL_INTENSITY32UI_EXT, 0 },
-      { PIPE_FORMAT_I32_UINT, 0 }
+      { PIPE_FORMAT_I32_UINT, PIPE_FORMAT_R32G32B32A32_UINT, 0 }
    },
    {
       { GL_LUMINANCE8I_EXT, 0 },
-      { PIPE_FORMAT_L8_SINT, 0 }
+      { PIPE_FORMAT_L8_SINT, PIPE_FORMAT_R8G8B8A8_SINT, 0 }
    },
    {
       { GL_LUMINANCE16I_EXT, 0 },
-      { PIPE_FORMAT_L16_SINT, 0 }
+      { PIPE_FORMAT_L16_SINT, PIPE_FORMAT_R16G16B16A16_SINT, 0 }
    },
    {
       { GL_LUMINANCE32I_EXT, 0 },
-      { PIPE_FORMAT_L32_SINT, 0 }
+      { PIPE_FORMAT_L32_SINT, PIPE_FORMAT_R32G32B32A32_SINT, 0 }
    },
    {
       { GL_LUMINANCE_INTEGER_EXT,
         GL_LUMINANCE8UI_EXT, 0 },
-      { PIPE_FORMAT_L8_UINT, 0 }
+      { PIPE_FORMAT_L8_UINT, PIPE_FORMAT_R8G8B8A8_UINT, 0 }
    },
    {
       { GL_LUMINANCE16UI_EXT, 0 },
-      { PIPE_FORMAT_L16_UINT, 0 }
+      { PIPE_FORMAT_L16_UINT, PIPE_FORMAT_R16G16B16A16_UINT, 0 }
    },
    {
       { GL_LUMINANCE32UI_EXT, 0 },
-      { PIPE_FORMAT_L32_UINT, 0 }
+      { PIPE_FORMAT_L32_UINT, PIPE_FORMAT_R32G32B32A32_UINT, 0 }
    },
    {
       { GL_LUMINANCE_ALPHA_INTEGER_EXT,
         GL_LUMINANCE_ALPHA8I_EXT, 0 },
-      { PIPE_FORMAT_L8A8_SINT, 0 }
+      { PIPE_FORMAT_L8A8_SINT, PIPE_FORMAT_R8G8B8A8_SINT, 0 }
    },
    {
       { GL_LUMINANCE_ALPHA16I_EXT, 0 },
-      { PIPE_FORMAT_L16A16_SINT, 0 }
+      { PIPE_FORMAT_L16A16_SINT, PIPE_FORMAT_R16G16B16A16_SINT, 0 }
    },
    {
       { GL_LUMINANCE_ALPHA32I_EXT, 0 },
-      { PIPE_FORMAT_L32A32_SINT, 0 }
+      { PIPE_FORMAT_L32A32_SINT, PIPE_FORMAT_R32G32B32A32_SINT, 0 }
    },
    {
       { GL_LUMINANCE_ALPHA8UI_EXT, 0 },
-      { PIPE_FORMAT_L8A8_UINT, 0 }
+      { PIPE_FORMAT_L8A8_UINT, PIPE_FORMAT_R8G8B8A8_UINT, 0 }
    },
    {
       { GL_LUMINANCE_ALPHA16UI_EXT, 0 },
-      { PIPE_FORMAT_L16A16_UINT, 0 }
+      { PIPE_FORMAT_L16A16_UINT, PIPE_FORMAT_R16G16B16A16_UINT, 0 }
    },
    {
       { GL_LUMINANCE_ALPHA32UI_EXT, 0 },
-      { PIPE_FORMAT_L32A32_UINT, 0 }
+      { PIPE_FORMAT_L32A32_UINT, PIPE_FORMAT_R32G32B32A32_UINT, 0 }
    },
    {
       { GL_RGB16I_EXT, 0 },

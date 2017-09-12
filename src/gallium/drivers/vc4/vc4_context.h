@@ -30,6 +30,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
 #include "util/slab.h"
+#include "xf86drm.h"
 
 #define __user
 #include "vc4_drm.h"
@@ -37,6 +38,13 @@
 #include "vc4_resource.h"
 #include "vc4_cl.h"
 #include "vc4_qir.h"
+
+#ifndef DRM_VC4_PARAM_SUPPORTS_ETC1
+#define DRM_VC4_PARAM_SUPPORTS_ETC1		4
+#endif
+#ifndef DRM_VC4_PARAM_SUPPORTS_THREADED_FS
+#define DRM_VC4_PARAM_SUPPORTS_THREADED_FS	5
+#endif
 
 #ifdef USE_VC4_SIMULATOR
 #define using_vc4_simulator true
@@ -59,7 +67,7 @@
 #define VC4_DIRTY_CONSTBUF      (1 << 13)
 #define VC4_DIRTY_VTXSTATE      (1 << 14)
 #define VC4_DIRTY_VTXBUF        (1 << 15)
-#define VC4_DIRTY_INDEXBUF      (1 << 16)
+
 #define VC4_DIRTY_SCISSOR       (1 << 17)
 #define VC4_DIRTY_FLAT_SHADE_FLAGS (1 << 18)
 #define VC4_DIRTY_PRIM_MODE     (1 << 19)
@@ -156,6 +164,14 @@ struct vc4_compiled_shader {
 
         bool disable_early_z;
 
+        /* Set if the compile failed, likely due to register allocation
+         * failure.  In this case, we have no shader to run and should not try
+         * to do any draws.
+         */
+        bool failed;
+
+        bool fs_threaded;
+
         uint8_t num_inputs;
 
         /* Byte offsets for the start of the vertex attributes 0-7, and the
@@ -190,18 +206,35 @@ struct vc4_vertex_stateobj {
         unsigned num_elements;
 };
 
-struct vc4_context {
-        struct pipe_context base;
+/* Hash table key for vc4->jobs */
+struct vc4_job_key {
+        struct pipe_surface *cbuf;
+        struct pipe_surface *zsbuf;
+};
 
-        int fd;
-        struct vc4_screen *screen;
-
+/**
+ * A complete bin/render job.
+ *
+ * This is all of the state necessary to submit a bin/render to the kernel.
+ * We want to be able to have multiple in progress at a time, so that we don't
+ * need to flush an existing CL just to switch to rendering to a new render
+ * target (which would mean reading back from the old render target when
+ * starting to render to it again).
+ */
+struct vc4_job {
         struct vc4_cl bcl;
         struct vc4_cl shader_rec;
         struct vc4_cl uniforms;
         struct vc4_cl bo_handles;
         struct vc4_cl bo_pointers;
         uint32_t shader_rec_count;
+        /**
+         * Amount of memory used by the BOs in bo_pointers.
+         *
+         * Used for checking when we should flush the job early so we don't
+         * OOM.
+         */
+        uint32_t bo_space;
 
         /** @{ Surfaces to submit rendering for. */
         struct pipe_surface *color_read;
@@ -238,11 +271,6 @@ struct vc4_context {
         bool msaa;
 	/** @} */
 
-        struct slab_mempool transfer_pool;
-        struct blitter_context *blitter;
-
-        /** bitfield of VC4_DIRTY_* */
-        uint32_t dirty;
         /* Bitmask of PIPE_CLEAR_* of buffers that were cleared before the
          * first rendering.
          */
@@ -268,10 +296,35 @@ struct vc4_context {
          */
         uint32_t draw_calls_queued;
 
-        /** Maximum index buffer valid for the current shader_rec. */
-        uint32_t max_index;
-        /** Last index bias baked into the current shader_rec. */
-        uint32_t last_index_bias;
+        struct vc4_job_key key;
+};
+
+struct vc4_context {
+        struct pipe_context base;
+
+        int fd;
+        struct vc4_screen *screen;
+
+        /** The 3D rendering job for the currently bound FBO. */
+        struct vc4_job *job;
+
+        /* Map from struct vc4_job_key to the job for that FBO.
+         */
+        struct hash_table *jobs;
+
+        /**
+         * Map from vc4_resource to a job writing to that resource.
+         *
+         * Primarily for flushing jobs rendering to textures that are now
+         * being read from.
+         */
+        struct hash_table *write_jobs;
+
+        struct slab_child_pool transfer_pool;
+        struct blitter_context *blitter;
+
+        /** bitfield of VC4_DIRTY_* */
+        uint32_t dirty;
 
         struct primconvert_context *primconvert;
 
@@ -281,13 +334,19 @@ struct vc4_context {
         uint64_t next_compiled_program_id;
 
         struct ra_regs *regs;
-        unsigned int reg_class_any;
-        unsigned int reg_class_a_or_b_or_acc;
+        unsigned int reg_class_any[2];
+        unsigned int reg_class_a_or_b[2];
+        unsigned int reg_class_a_or_b_or_acc[2];
         unsigned int reg_class_r0_r3;
-        unsigned int reg_class_r4_or_a;
-        unsigned int reg_class_a;
+        unsigned int reg_class_r4_or_a[2];
+        unsigned int reg_class_a[2];
 
         uint8_t prim_mode;
+
+        /** Maximum index buffer valid for the current shader_rec. */
+        uint32_t max_index;
+        /** Last index bias baked into the current shader_rec. */
+        uint32_t last_index_bias;
 
         /** Seqno of the last CL flush's job. */
         uint64_t last_emit_seqno;
@@ -318,7 +377,6 @@ struct vc4_context {
         struct pipe_viewport_state viewport;
         struct vc4_constbuf_stateobj constbuf[PIPE_SHADER_TYPES];
         struct vc4_vertexbuf_stateobj vertexbuf;
-        struct pipe_index_buffer indexbuf;
         /** @} */
 };
 
@@ -326,27 +384,20 @@ struct vc4_rasterizer_state {
         struct pipe_rasterizer_state base;
 
         /* VC4_CONFIGURATION_BITS */
-        uint8_t config_bits[3];
+        uint8_t config_bits[V3D21_CONFIGURATION_BITS_length];
 
-        float point_size;
-
-        /**
-         * Half-float (1/8/7 bits) value of polygon offset units for
-         * VC4_PACKET_DEPTH_OFFSET
-         */
-        uint16_t offset_units;
-        /**
-         * Half-float (1/8/7 bits) value of polygon offset scale for
-         * VC4_PACKET_DEPTH_OFFSET
-         */
-        uint16_t offset_factor;
+        struct PACKED {
+                uint8_t depth_offset[V3D21_DEPTH_OFFSET_length];
+                uint8_t point_size[V3D21_POINT_SIZE_length];
+                uint8_t line_width[V3D21_LINE_WIDTH_length];
+        } packed;
 };
 
 struct vc4_depth_stencil_alpha_state {
         struct pipe_depth_stencil_alpha_state base;
 
         /* VC4_CONFIGURATION_BITS */
-        uint8_t config_bits[3];
+        uint8_t config_bits[V3D21_CONFIGURATION_BITS_length];
 
         /** Uniforms for stencil state.
          *
@@ -388,8 +439,22 @@ void vc4_program_init(struct pipe_context *pctx);
 void vc4_program_fini(struct pipe_context *pctx);
 void vc4_query_init(struct pipe_context *pctx);
 void vc4_simulator_init(struct vc4_screen *screen);
+void vc4_simulator_destroy(struct vc4_screen *screen);
 int vc4_simulator_flush(struct vc4_context *vc4,
-                        struct drm_vc4_submit_cl *args);
+                        struct drm_vc4_submit_cl *args,
+                        struct vc4_job *job);
+int vc4_simulator_ioctl(int fd, unsigned long request, void *arg);
+void vc4_simulator_open_from_handle(int fd, uint32_t winsys_stride,
+                                    int handle, uint32_t size);
+
+static inline int
+vc4_ioctl(int fd, unsigned long request, void *arg)
+{
+        if (using_vc4_simulator)
+                return vc4_simulator_ioctl(fd, request, arg);
+        else
+                return drmIoctl(fd, request, arg);
+}
 
 void vc4_set_shader_uniform_dirty_flags(struct vc4_compiled_shader *shader);
 void vc4_write_uniforms(struct vc4_context *vc4,
@@ -399,14 +464,20 @@ void vc4_write_uniforms(struct vc4_context *vc4,
 
 void vc4_flush(struct pipe_context *pctx);
 void vc4_job_init(struct vc4_context *vc4);
-void vc4_job_submit(struct vc4_context *vc4);
-void vc4_job_reset(struct vc4_context *vc4);
-bool vc4_cl_references_bo(struct pipe_context *pctx, struct vc4_bo *bo,
-                          bool include_reads);
+struct vc4_job *vc4_get_job(struct vc4_context *vc4,
+                            struct pipe_surface *cbuf,
+                            struct pipe_surface *zsbuf);
+struct vc4_job *vc4_get_job_for_fbo(struct vc4_context *vc4);
+
+void vc4_job_submit(struct vc4_context *vc4, struct vc4_job *job);
+void vc4_flush_jobs_writing_resource(struct vc4_context *vc4,
+                                     struct pipe_resource *prsc);
+void vc4_flush_jobs_reading_resource(struct vc4_context *vc4,
+                                     struct pipe_resource *prsc);
 void vc4_emit_state(struct pipe_context *pctx);
 void vc4_generate_code(struct vc4_context *vc4, struct vc4_compile *c);
 struct qpu_reg *vc4_register_allocate(struct vc4_context *vc4, struct vc4_compile *c);
-void vc4_update_compiled_shaders(struct vc4_context *vc4, uint8_t prim_mode);
+bool vc4_update_compiled_shaders(struct vc4_context *vc4, uint8_t prim_mode);
 
 bool vc4_rt_format_supported(enum pipe_format f);
 bool vc4_rt_format_is_565(enum pipe_format f);
@@ -415,4 +486,5 @@ uint8_t vc4_get_tex_format(enum pipe_format f);
 const uint8_t *vc4_get_format_swizzle(enum pipe_format f);
 void vc4_init_query_functions(struct vc4_context *vc4);
 void vc4_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info);
+void vc4_blitter_save(struct vc4_context *vc4);
 #endif /* VC4_CONTEXT_H */

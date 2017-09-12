@@ -50,13 +50,14 @@
 DEBUG_GET_ONCE_BOOL_OPTION(no_swtnl, "SVGA_NO_SWTNL", FALSE)
 DEBUG_GET_ONCE_BOOL_OPTION(force_swtnl, "SVGA_FORCE_SWTNL", FALSE);
 DEBUG_GET_ONCE_BOOL_OPTION(use_min_mipmap, "SVGA_USE_MIN_MIPMAP", FALSE);
-DEBUG_GET_ONCE_NUM_OPTION(disable_shader, "SVGA_DISABLE_SHADER", ~0);
 DEBUG_GET_ONCE_BOOL_OPTION(no_line_width, "SVGA_NO_LINE_WIDTH", FALSE);
 DEBUG_GET_ONCE_BOOL_OPTION(force_hw_line_stipple, "SVGA_FORCE_HW_LINE_STIPPLE", FALSE);
 
-static void svga_destroy( struct pipe_context *pipe )
+
+static void
+svga_destroy(struct pipe_context *pipe)
 {
-   struct svga_context *svga = svga_context( pipe );
+   struct svga_context *svga = svga_context(pipe);
    unsigned shader, i;
 
    /* free any alternate rasterizer states used for point sprite */
@@ -64,6 +65,11 @@ static void svga_destroy( struct pipe_context *pipe )
       if (svga->rasterizer_no_cull[i]) {
          pipe->delete_rasterizer_state(pipe, svga->rasterizer_no_cull[i]);
       }
+   }
+
+   /* free depthstencil_disable state */
+   if (svga->depthstencil_disable) {
+      pipe->delete_depth_stencil_alpha_state(pipe, svga->depthstencil_disable);
    }
 
    /* free HW constant buffers */
@@ -82,12 +88,12 @@ static void svga_destroy( struct pipe_context *pipe )
    util_blitter_destroy(svga->blitter);
 
    svga_cleanup_sampler_state(svga);
-   svga_cleanup_framebuffer( svga );
-   svga_cleanup_tss_binding( svga );
+   svga_cleanup_framebuffer(svga);
+   svga_cleanup_tss_binding(svga);
    svga_cleanup_vertex_state(svga);
-   
-   svga_destroy_swtnl( svga );
-   svga_hwtnl_destroy( svga->hwtnl );
+
+   svga_destroy_swtnl(svga);
+   svga_hwtnl_destroy(svga->hwtnl);
 
    svga->swc->destroy(svga->swc);
 
@@ -102,6 +108,9 @@ static void svga_destroy( struct pipe_context *pipe )
    util_bitmask_destroy(svga->stream_output_id_bm);
    util_bitmask_destroy(svga->query_id_bm);
    u_upload_destroy(svga->const0_upload);
+   u_upload_destroy(svga->pipe.stream_uploader);
+   u_upload_destroy(svga->pipe.const_uploader);
+   svga_texture_transfer_map_upload_destroy(svga);
 
    /* free user's constant buffers */
    for (shader = 0; shader < PIPE_SHADER_TYPES; ++shader) {
@@ -110,17 +119,18 @@ static void svga_destroy( struct pipe_context *pipe )
       }
    }
 
-   FREE( svga );
+   FREE(svga);
 }
 
 
-
-struct pipe_context *svga_context_create(struct pipe_screen *screen,
-					 void *priv, unsigned flags)
+struct pipe_context *
+svga_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
 {
    struct svga_screen *svgascreen = svga_screen(screen);
    struct svga_context *svga = NULL;
    enum pipe_error ret;
+
+   SVGA_STATS_TIME_PUSH(svgascreen->sws, SVGA_STATS_TIME_CREATECONTEXT);
 
    svga = CALLOC_STRUCT(svga_context);
    if (!svga)
@@ -131,6 +141,18 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    svga->pipe.screen = screen;
    svga->pipe.priv = priv;
    svga->pipe.destroy = svga_destroy;
+   svga->pipe.stream_uploader = u_upload_create(&svga->pipe, 1024 * 1024,
+                                                PIPE_BIND_VERTEX_BUFFER |
+                                                PIPE_BIND_INDEX_BUFFER,
+                                                PIPE_USAGE_STREAM);
+   if (!svga->pipe.stream_uploader)
+      goto cleanup;
+
+   svga->pipe.const_uploader = u_upload_create(&svga->pipe, 128 * 1024,
+                                               PIPE_BIND_CONSTANT_BUFFER,
+                                               PIPE_USAGE_STREAM);
+   if (!svga->pipe.const_uploader)
+      goto cleanup;
 
    svga->swc = svgascreen->sws->context_create(svgascreen->sws);
    if (!svga->swc)
@@ -162,7 +184,6 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    svga->debug.no_swtnl = debug_get_option_no_swtnl();
    svga->debug.force_swtnl = debug_get_option_force_swtnl();
    svga->debug.use_min_mipmap = debug_get_option_use_min_mipmap();
-   svga->debug.disable_shader = debug_get_option_disable_shader();
    svga->debug.no_line_width = debug_get_option_no_line_width();
    svga->debug.force_hw_line_stipple = debug_get_option_force_hw_line_stipple();
 
@@ -203,7 +224,7 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    if (!svga_init_swtnl(svga))
       goto cleanup;
 
-   ret = svga_emit_initial_state( svga );
+   ret = svga_emit_initial_state(svga);
    if (ret != PIPE_OK)
       goto cleanup;
 
@@ -214,11 +235,16 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    if (!svga->const0_upload)
       goto cleanup;
 
+   if (!svga_texture_transfer_map_upload_create(svga))
+      goto cleanup;
+
    /* Avoid shortcircuiting state with initial value of zero.
     */
    memset(&svga->state.hw_clear, 0xcd, sizeof(svga->state.hw_clear));
-   memset(&svga->state.hw_clear.framebuffer, 0x0, 
+   memset(&svga->state.hw_clear.framebuffer, 0x0,
           sizeof(svga->state.hw_clear.framebuffer));
+   svga->state.hw_clear.num_rendertargets = 0;
+   svga->state.hw_clear.dsv = NULL;
 
    memset(&svga->state.hw_draw, 0xcd, sizeof(svga->state.hw_draw));
    memset(&svga->state.hw_draw.views, 0x0, sizeof(svga->state.hw_draw.views));
@@ -229,8 +255,8 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    memset(svga->state.hw_draw.sampler_views, 0,
           sizeof(svga->state.hw_draw.sampler_views));
    svga->state.hw_draw.num_views = 0;
-   svga->state.hw_draw.num_rendertargets = 0;
-   svga->state.hw_draw.dsv = NULL;
+   svga->state.hw_draw.num_backed_views = 0;
+   svga->state.hw_draw.rasterizer_discard = FALSE;
 
    /* Initialize the shader pointers */
    svga->state.hw_draw.vs = NULL;
@@ -248,6 +274,8 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    svga->state.hw_draw.num_vbuffers = 0;
    memset(svga->state.hw_draw.vbuffers, 0,
           sizeof(svga->state.hw_draw.vbuffers));
+   svga->state.hw_draw.const0_buffer = NULL;
+   svga->state.hw_draw.const0_handle = NULL;
 
    /* Create a no-operation blend state which we will bind whenever the
     * requested blend state is impossible (e.g. due to having an integer
@@ -269,14 +297,21 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    }
 
    svga->dirty = ~0;
+   svga->pred.query_id = SVGA3D_INVALID_ID;
+   svga->disable_rasterizer = FALSE;
 
-   return &svga->pipe;
+   goto done;
 
 cleanup:
    svga_destroy_swtnl(svga);
 
    if (svga->const0_upload)
       u_upload_destroy(svga->const0_upload);
+   if (svga->pipe.const_uploader)
+      u_upload_destroy(svga->pipe.const_uploader);
+   if (svga->pipe.stream_uploader)
+      u_upload_destroy(svga->pipe.stream_uploader);
+   svga_texture_transfer_map_upload_destroy(svga);
    if (svga->hwtnl)
       svga_hwtnl_destroy(svga->hwtnl);
    if (svga->swc)
@@ -292,12 +327,16 @@ cleanup:
    util_bitmask_destroy(svga->stream_output_id_bm);
    util_bitmask_destroy(svga->query_id_bm);
    FREE(svga);
-   return NULL;
+
+done:
+   SVGA_STATS_TIME_POP(svgascreen->sws);
+   return svga ? &svga->pipe:NULL;
 }
 
 
-void svga_context_flush( struct svga_context *svga, 
-                         struct pipe_fence_handle **pfence )
+void
+svga_context_flush(struct svga_context *svga,
+                   struct pipe_fence_handle **pfence)
 {
    struct svga_screen *svgascreen = svga_screen(svga->pipe.screen);
    struct pipe_fence_handle *fence = NULL;
@@ -306,6 +345,17 @@ void svga_context_flush( struct svga_context *svga,
    SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_CONTEXTFLUSH);
 
    svga->curr.nr_fbs = 0;
+
+   /* Unmap the 0th/default constant buffer.  The u_upload_unmap() function
+    * will call pipe_context::transfer_flush_region() to indicate the
+    * region of the buffer which was modified (and needs to be uploaded).
+    */
+   if (svga->state.hw_draw.const0_handle) {
+      assert(svga->state.hw_draw.const0_buffer);
+      u_upload_unmap(svga->const0_upload);
+      pipe_resource_reference(&svga->state.hw_draw.const0_buffer, NULL);
+      svga->state.hw_draw.const0_handle = NULL;
+   }
 
    /* Ensure that texture dma uploads are processed
     * before submitting commands.
@@ -323,7 +373,9 @@ void svga_context_flush( struct svga_context *svga,
 
    svga->hud.num_flushes++;
 
-   svga_screen_cache_flush(svgascreen, fence);
+   svga_screen_cache_flush(svgascreen, svga, fence);
+
+   SVGA3D_ResetLastCommand(svga->swc);
 
    /* To force the re-emission of rendertargets and texture sampler bindings on
     * the next command buffer.
@@ -345,7 +397,7 @@ void svga_context_flush( struct svga_context *svga,
 
    if (SVGA_DEBUG & DEBUG_SYNC) {
       if (fence)
-         svga->pipe.screen->fence_finish( svga->pipe.screen, NULL, fence,
+         svga->pipe.screen->fence_finish(svga->pipe.screen, NULL, fence,
                                           PIPE_TIMEOUT_INFINITE);
    }
 
@@ -367,9 +419,13 @@ svga_context_finish(struct svga_context *svga)
    struct pipe_screen *screen = svga->pipe.screen;
    struct pipe_fence_handle *fence = NULL;
 
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_CONTEXTFINISH);
+
    svga_context_flush(svga, &fence);
    screen->fence_finish(screen, NULL, fence, PIPE_TIMEOUT_INFINITE);
    screen->fence_reference(screen, &fence, NULL);
+
+   SVGA_STATS_TIME_POP(svga_sws(svga));
 }
 
 
@@ -378,14 +434,15 @@ svga_context_finish(struct svga_context *svga)
  * If the command buffer overflows, we flush it and retry.
  * \sa svga_hwtnl_flush()
  */
-void svga_hwtnl_flush_retry( struct svga_context *svga )
+void
+svga_hwtnl_flush_retry(struct svga_context *svga)
 {
    enum pipe_error ret = PIPE_OK;
 
-   ret = svga_hwtnl_flush( svga->hwtnl );
+   ret = svga_hwtnl_flush(svga->hwtnl);
    if (ret == PIPE_ERROR_OUT_OF_MEMORY) {
-      svga_context_flush( svga, NULL );
-      ret = svga_hwtnl_flush( svga->hwtnl );
+      svga_context_flush(svga, NULL);
+      ret = svga_hwtnl_flush(svga->hwtnl);
    }
 
    assert(ret == PIPE_OK);
@@ -397,8 +454,9 @@ void svga_hwtnl_flush_retry( struct svga_context *svga )
  *
  * Otherwise DMA commands on the referred buffer will be emitted too late.
  */
-void svga_hwtnl_flush_buffer( struct svga_context *svga,
-                              struct pipe_resource *buffer )
+void
+svga_hwtnl_flush_buffer(struct svga_context *svga,
+                        struct pipe_resource *buffer)
 {
    if (svga_hwtnl_is_buffer_referred(svga->hwtnl, buffer)) {
       svga_hwtnl_flush_retry(svga);
@@ -406,15 +464,17 @@ void svga_hwtnl_flush_buffer( struct svga_context *svga,
 }
 
 
-/* Emit all operations pending on host surfaces.
- */ 
-void svga_surfaces_flush(struct svga_context *svga)
+/**
+ * Emit all operations pending on host surfaces.
+ */
+void
+svga_surfaces_flush(struct svga_context *svga)
 {
    SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_SURFACEFLUSH);
 
    /* Emit buffered drawing commands.
     */
-   svga_hwtnl_flush_retry( svga );
+   svga_hwtnl_flush_retry(svga);
 
    /* Emit back-copy from render target views to textures.
     */
@@ -425,7 +485,7 @@ void svga_surfaces_flush(struct svga_context *svga)
 
 
 struct svga_winsys_context *
-svga_winsys_context( struct pipe_context *pipe )
+svga_winsys_context(struct pipe_context *pipe)
 {
-   return svga_context( pipe )->swc;
+   return svga_context(pipe)->swc;
 }

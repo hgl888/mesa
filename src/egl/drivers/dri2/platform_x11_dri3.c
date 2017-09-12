@@ -30,6 +30,7 @@
 #include <xcb/present.h>
 
 #include <xf86drm.h>
+#include "util/macros.h"
 
 #include "egl_dri2.h"
 #include "egl_dri2_fallbacks.h"
@@ -42,35 +43,6 @@ static struct dri3_egl_surface *
 loader_drawable_to_egl_surface(struct loader_dri3_drawable *draw) {
    size_t offset = offsetof(struct dri3_egl_surface, loader_drawable);
    return (struct dri3_egl_surface *)(((void*) draw) - offset);
-}
-
-static int
-egl_dri3_get_swap_interval(struct loader_dri3_drawable *draw)
-{
-   struct dri3_egl_surface *dri3_surf = loader_drawable_to_egl_surface(draw);
-
-   return dri3_surf->base.SwapInterval;
-}
-
-static int
-egl_dri3_clamp_swap_interval(struct loader_dri3_drawable *draw, int interval)
-{
-   struct dri3_egl_surface *dri3_surf = loader_drawable_to_egl_surface(draw);
-
-   if (interval > dri3_surf->base.Config->MaxSwapInterval)
-      interval = dri3_surf->base.Config->MaxSwapInterval;
-   else if (interval < dri3_surf->base.Config->MinSwapInterval)
-      interval = dri3_surf->base.Config->MinSwapInterval;
-
-   return interval;
-}
-
-static void
-egl_dri3_set_swap_interval(struct loader_dri3_drawable *draw, int interval)
-{
-   struct dri3_egl_surface *dri3_surf = loader_drawable_to_egl_surface(draw);
-
-   dri3_surf->base.SwapInterval = interval;
 }
 
 static void
@@ -112,10 +84,7 @@ egl_dri3_flush_drawable(struct loader_dri3_drawable *draw, unsigned flags)
    dri2_flush_drawable_for_swapbuffers(disp, &dri3_surf->base);
 }
 
-static struct loader_dri3_vtable egl_dri3_vtable = {
-   .get_swap_interval = egl_dri3_get_swap_interval,
-   .clamp_swap_interval = egl_dri3_clamp_swap_interval,
-   .set_swap_interval = egl_dri3_set_swap_interval,
+static const struct loader_dri3_vtable egl_dri3_vtable = {
    .set_drawable_size = egl_dri3_set_drawable_size,
    .in_current_context = egl_dri3_in_current_context,
    .get_dri_context = egl_dri3_get_dri_context,
@@ -130,9 +99,6 @@ dri3_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 
    (void) drv;
 
-   if (!_eglPutSurface(surf))
-      return EGL_TRUE;
-
    loader_dri3_drawable_fini(&dri3_surf->loader_drawable);
 
    free(surf);
@@ -146,19 +112,10 @@ dri3_set_swap_interval(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf,
 {
    struct dri3_egl_surface *dri3_surf = dri3_egl_surface(surf);
 
+   dri3_surf->base.SwapInterval = interval;
    loader_dri3_set_swap_interval(&dri3_surf->loader_drawable, interval);
 
    return EGL_TRUE;
-}
-
-static xcb_screen_t *
-get_xcb_screen(xcb_screen_iterator_t iter, int screen)
-{
-    for (; iter.rem; --screen, xcb_screen_next(&iter))
-        if (screen == 0)
-            return iter.data;
-
-    return NULL;
 }
 
 static _EGLSurface *
@@ -171,11 +128,6 @@ dri3_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
    struct dri3_egl_surface *dri3_surf;
    const __DRIconfig *dri_config;
    xcb_drawable_t drawable;
-   xcb_screen_iterator_t s;
-   xcb_screen_t *screen;
-
-   STATIC_ASSERT(sizeof(uintptr_t) == sizeof(native_surface));
-   drawable = (uintptr_t) native_surface;
 
    (void) drv;
 
@@ -189,17 +141,13 @@ dri3_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
       goto cleanup_surf;
 
    if (type == EGL_PBUFFER_BIT) {
-      s = xcb_setup_roots_iterator(xcb_get_setup(dri2_dpy->conn));
-      screen = get_xcb_screen(s, dri2_dpy->screen);
-      if (!screen) {
-         _eglError(EGL_BAD_NATIVE_WINDOW, "dri3_create_surface");
-         goto cleanup_surf;
-      }
-
       drawable = xcb_generate_id(dri2_dpy->conn);
       xcb_create_pixmap(dri2_dpy->conn, conf->BufferSize,
-                        drawable, screen->root,
+                        drawable, dri2_dpy->screen->root,
                         dri3_surf->base.Width, dri3_surf->base.Height);
+   } else {
+      STATIC_ASSERT(sizeof(uintptr_t) == sizeof(native_surface));
+      drawable = (uintptr_t) native_surface;
    }
 
    dri_config = dri2_get_dri_config(dri2_conf, type,
@@ -278,7 +226,7 @@ dri3_create_pbuffer_surface(_EGLDriver *drv, _EGLDisplay *disp,
                                 _EGLConfig *conf, const EGLint *attrib_list)
 {
    return dri3_create_surface(drv, disp, EGL_PBUFFER_BIT, conf,
-                              XCB_WINDOW_NONE, attrib_list);
+                              NULL, attrib_list);
 }
 
 static EGLBoolean
@@ -336,10 +284,7 @@ dri3_create_image_khr_pixmap(_EGLDisplay *disp, _EGLContext *ctx,
       return EGL_NO_IMAGE_KHR;
    }
 
-   if (!_eglInitImage(&dri2_img->base, disp)) {
-      free(dri2_img);
-      return EGL_NO_IMAGE_KHR;
-   }
+   _eglInitImage(&dri2_img->base, disp);
 
    dri2_img->dri_image = loader_dri3_create_image(dri2_dpy->conn,
                                                   bp_reply,
@@ -398,7 +343,7 @@ dri3_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
 
    /* No-op for a pixmap or pbuffer surface */
    if (draw->Type == EGL_PIXMAP_BIT || draw->Type == EGL_PBUFFER_BIT)
-      return 0;
+      return EGL_FALSE;
 
    return loader_dri3_swap_buffers_msc(&dri3_surf->loader_drawable,
                                        0, 0, 0, 0,
@@ -429,12 +374,39 @@ dri3_query_buffer_age(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf)
    return loader_dri3_query_buffer_age(&dri3_surf->loader_drawable);
 }
 
+static EGLBoolean
+dri3_query_surface(_EGLDriver *drv, _EGLDisplay *dpy,
+                   _EGLSurface *surf, EGLint attribute,
+                   EGLint *value)
+{
+   struct dri3_egl_surface *dri3_surf = dri3_egl_surface(surf);
+
+   switch (attribute) {
+   case EGL_WIDTH:
+   case EGL_HEIGHT:
+      loader_dri3_update_drawable_geometry(&dri3_surf->loader_drawable);
+      break;
+   default:
+      break;
+   }
+
+   return _eglQuerySurface(drv, dpy, surf, attribute, value);
+}
+
 static __DRIdrawable *
 dri3_get_dri_drawable(_EGLSurface *surf)
 {
    struct dri3_egl_surface *dri3_surf = dri3_egl_surface(surf);
 
    return dri3_surf->loader_drawable.dri_drawable;
+}
+
+static void
+dri3_close_screen_notify(_EGLDisplay *dpy)
+{
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);
+
+   loader_dri3_close_screen(dri2_dpy->dri_screen);
 }
 
 struct dri2_egl_display_vtbl dri3_x11_display_vtbl = {
@@ -448,12 +420,15 @@ struct dri2_egl_display_vtbl dri3_x11_display_vtbl = {
    .swap_buffers = dri3_swap_buffers,
    .swap_buffers_with_damage = dri2_fallback_swap_buffers_with_damage,
    .swap_buffers_region = dri2_fallback_swap_buffers_region,
+   .set_damage_region = dri2_fallback_set_damage_region,
    .post_sub_buffer = dri2_fallback_post_sub_buffer,
    .copy_buffers = dri3_copy_buffers,
    .query_buffer_age = dri3_query_buffer_age,
+   .query_surface = dri3_query_surface,
    .create_wayland_buffer_from_image = dri2_fallback_create_wayland_buffer_from_image,
    .get_sync_values = dri3_get_sync_values,
    .get_dri_drawable = dri3_get_dri_drawable,
+   .close_screen_notify = dri3_close_screen_notify,
 };
 
 EGLBoolean
@@ -464,8 +439,6 @@ dri3_x11_connect(struct dri2_egl_display *dri2_dpy)
    xcb_present_query_version_reply_t *present_query;
    xcb_present_query_version_cookie_t present_query_cookie;
    xcb_generic_error_t *error;
-   xcb_screen_iterator_t s;
-   xcb_screen_t *screen;
    const xcb_query_extension_reply_t *extension;
 
    xcb_prefetch_extension_data (dri2_dpy->conn, &xcb_dri3_id);
@@ -508,14 +481,7 @@ dri3_x11_connect(struct dri2_egl_display *dri2_dpy)
    }
    free(present_query);
 
-   s = xcb_setup_roots_iterator(xcb_get_setup(dri2_dpy->conn));
-   screen = get_xcb_screen(s, dri2_dpy->screen);
-   if (!screen) {
-      _eglError(EGL_BAD_NATIVE_WINDOW, "dri3_x11_connect");
-      return EGL_FALSE;
-   }
-
-   dri2_dpy->fd = loader_dri3_open(dri2_dpy->conn, screen->root, 0);
+   dri2_dpy->fd = loader_dri3_open(dri2_dpy->conn, dri2_dpy->screen->root, 0);
    if (dri2_dpy->fd < 0) {
       int conn_error = xcb_connection_has_error(dri2_dpy->conn);
       _eglLog(_EGL_WARNING, "DRI3: Screen seems not DRI3 capable");
@@ -528,7 +494,7 @@ dri3_x11_connect(struct dri2_egl_display *dri2_dpy)
 
    dri2_dpy->fd = loader_get_user_preferred_fd(dri2_dpy->fd, &dri2_dpy->is_different_gpu);
 
-   dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd, 0);
+   dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd);
    if (!dri2_dpy->driver_name) {
       _eglLog(_EGL_WARNING, "DRI3: No driver found");
       close(dri2_dpy->fd);

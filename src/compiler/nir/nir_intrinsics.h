@@ -41,6 +41,9 @@
 
 #define ARR(...) { __VA_ARGS__ }
 
+INTRINSIC(nop, 0, ARR(0), false, 0, 0, 0, xx, xx, xx,
+          NIR_INTRINSIC_CAN_ELIMINATE)
+
 INTRINSIC(load_var, 0, ARR(0), true, 0, 1, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
 INTRINSIC(store_var, 1, ARR(0), false, 0, 1, 1, WRMASK, xx, xx, 0)
 INTRINSIC(copy_var, 0, ARR(0), false, 0, 2, 0, xx, xx, xx, 0)
@@ -88,7 +91,20 @@ BARRIER(memory_barrier)
  * The latter can be used as code motion barrier, which is currently not
  * feasible with NIR.
  */
-INTRINSIC(shader_clock, 0, ARR(0), true, 1, 0, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
+INTRINSIC(shader_clock, 0, ARR(0), true, 2, 0, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
+
+/*
+ * Shader ballot intrinsics with semantics analogous to the
+ *
+ *    ballotARB()
+ *    readInvocationARB()
+ *    readFirstInvocationARB()
+ *
+ * GLSL functions from ARB_shader_ballot.
+ */
+INTRINSIC(ballot, 1, ARR(1), true, 1, 0, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
+INTRINSIC(read_invocation, 2, ARR(0, 1), true, 0, 0, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
+INTRINSIC(read_first_invocation, 1, ARR(0), true, 0, 0, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
 
 /*
  * Memory barrier with semantics analogous to the compute shader
@@ -103,6 +119,11 @@ BARRIER(memory_barrier_shared)
 
 /** A conditional discard, with a single boolean source. */
 INTRINSIC(discard_if, 1, ARR(1), false, 0, 0, 0, xx, xx, xx, 0)
+
+/** ARB_shader_group_vote intrinsics */
+INTRINSIC(vote_any, 1, ARR(1), true, 1, 1, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
+INTRINSIC(vote_all, 1, ARR(1), true, 1, 1, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
+INTRINSIC(vote_eq,  1, ARR(1), true, 1, 1, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)
 
 /**
  * Basic Geometry Shader intrinsics.
@@ -136,12 +157,26 @@ INTRINSIC(set_vertex_count, 1, ARR(1), false, 0, 0, 0, xx, xx, xx, 0)
  */
 
 #define ATOMIC(name, flags) \
-   INTRINSIC(atomic_counter_##name##_var, 0, ARR(0), true, 1, 1, 0, xx, xx, xx, flags) \
-   INTRINSIC(atomic_counter_##name, 1, ARR(1), true, 1, 0, 1, BASE, xx, xx, flags)
+   INTRINSIC(name##_var, 0, ARR(0), true, 1, 1, 0, xx, xx, xx, flags) \
+   INTRINSIC(name, 1, ARR(1), true, 1, 0, 1, BASE, xx, xx, flags)
+#define ATOMIC2(name) \
+   INTRINSIC(name##_var, 1, ARR(1), true, 1, 1, 0, xx, xx, xx, 0) \
+   INTRINSIC(name, 2, ARR(1, 1), true, 1, 0, 1, BASE, xx, xx, 0)
+#define ATOMIC3(name) \
+   INTRINSIC(name##_var, 2, ARR(1, 1), true, 1, 1, 0, xx, xx, xx, 0) \
+   INTRINSIC(name, 3, ARR(1, 1, 1), true, 1, 0, 1, BASE, xx, xx, 0)
 
-ATOMIC(inc, 0)
-ATOMIC(dec, 0)
-ATOMIC(read, NIR_INTRINSIC_CAN_ELIMINATE)
+ATOMIC(atomic_counter_inc, 0)
+ATOMIC(atomic_counter_dec, 0)
+ATOMIC(atomic_counter_read, NIR_INTRINSIC_CAN_ELIMINATE)
+ATOMIC2(atomic_counter_add)
+ATOMIC2(atomic_counter_min)
+ATOMIC2(atomic_counter_max)
+ATOMIC2(atomic_counter_and)
+ATOMIC2(atomic_counter_or)
+ATOMIC2(atomic_counter_xor)
+ATOMIC2(atomic_counter_exchange)
+ATOMIC3(atomic_counter_comp_swap)
 
 /*
  * Image load, store and atomic intrinsics.
@@ -169,7 +204,7 @@ INTRINSIC(image_atomic_or, 3, ARR(4, 1, 1), true, 1, 1, 0, xx, xx, xx, 0)
 INTRINSIC(image_atomic_xor, 3, ARR(4, 1, 1), true, 1, 1, 0, xx, xx, xx, 0)
 INTRINSIC(image_atomic_exchange, 3, ARR(4, 1, 1), true, 1, 1, 0, xx, xx, xx, 0)
 INTRINSIC(image_atomic_comp_swap, 4, ARR(4, 1, 1, 1), true, 1, 1, 0, xx, xx, xx, 0)
-INTRINSIC(image_size, 0, ARR(0), true, 4, 1, 0, xx, xx, xx,
+INTRINSIC(image_size, 0, ARR(0), true, 0, 1, 0, xx, xx, xx,
           NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
 INTRINSIC(image_samples, 0, ARR(0), true, 1, 1, 0, xx, xx, xx,
           NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
@@ -287,6 +322,7 @@ INTRINSIC(shared_atomic_comp_swap, 3, ARR(1, 1, 1), true, 1, 0, 1, BASE, xx, xx,
    idx0, idx1, idx2, \
    NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
 
+SYSTEM_VALUE(frag_coord, 4, 0, xx, xx, xx)
 SYSTEM_VALUE(front_face, 1, 0, xx, xx, xx)
 SYSTEM_VALUE(vertex_id, 1, 0, xx, xx, xx)
 SYSTEM_VALUE(vertex_id_zero_base, 1, 0, xx, xx, xx)
@@ -309,8 +345,16 @@ SYSTEM_VALUE(work_group_id, 3, 0, xx, xx, xx)
 SYSTEM_VALUE(user_clip_plane, 4, 1, UCP_ID, xx, xx)
 SYSTEM_VALUE(num_work_groups, 3, 0, xx, xx, xx)
 SYSTEM_VALUE(helper_invocation, 1, 0, xx, xx, xx)
-SYSTEM_VALUE(channel_num, 1, 0, xx, xx, xx)
 SYSTEM_VALUE(alpha_ref_float, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(layer_id, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(view_index, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(subgroup_size, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(subgroup_invocation, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(subgroup_eq_mask, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(subgroup_ge_mask, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(subgroup_gt_mask, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(subgroup_le_mask, 1, 0, xx, xx, xx)
+SYSTEM_VALUE(subgroup_lt_mask, 1, 0, xx, xx, xx)
 
 /* Blend constant color values.  Float values are clamped. */
 SYSTEM_VALUE(blend_const_color_r_float, 1, 0, xx, xx, xx)
@@ -383,7 +427,9 @@ LOAD(input, 1, 2, BASE, COMPONENT, xx, NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINS
 /* src[] = { vertex, offset }. const_index[] = { base, component } */
 LOAD(per_vertex_input, 2, 2, BASE, COMPONENT, xx, NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
 /* src[] = { barycoord, offset }. const_index[] = { base, component } */
-LOAD(interpolated_input, 2, 2, BASE, COMPONENT, xx, NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
+INTRINSIC(load_interpolated_input, 2, ARR(2, 1), true, 0, 0,
+          2, BASE, COMPONENT, xx,
+          NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
 
 /* src[] = { buffer_index, offset }. No const_index */
 LOAD(ssbo, 2, 0, xx, xx, xx, NIR_INTRINSIC_CAN_ELIMINATE)

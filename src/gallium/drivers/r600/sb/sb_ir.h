@@ -263,8 +263,6 @@ public:
 	}
 };
 
-class value;
-
 enum value_kind {
 	VLK_REG,
 	VLK_REL_REG,
@@ -433,31 +431,11 @@ inline value_flags& operator &=(value_flags &l, value_flags r) {
 	return l;
 }
 
-struct value;
-
 sb_ostream& operator << (sb_ostream &o, value &v);
 
 typedef uint32_t value_hash;
 
-enum use_kind {
-	UK_SRC,
-	UK_SRC_REL,
-	UK_DST_REL,
-	UK_MAYDEF,
-	UK_MAYUSE,
-	UK_PRED,
-	UK_COND
-};
-
-struct use_info {
-	use_info *next;
-	node *op;
-	use_kind kind;
-	int arg;
-
-	use_info(node *n, use_kind kind, int arg, use_info* next)
-		: next(next), op(n), kind(kind), arg(arg) {}
-};
+typedef std::list< node * > uselist;
 
 enum constraint_kind {
 	CK_SAME_REG,
@@ -467,7 +445,7 @@ enum constraint_kind {
 
 class shader;
 class sb_value_pool;
-class ra_chunk;
+struct ra_chunk;
 class ra_constraint;
 
 class value {
@@ -502,7 +480,7 @@ public:
 	value_hash ghash;
 
 	node *def, *adef;
-	use_info *uses;
+	uselist uses;
 
 	ra_constraint *constraint;
 	ra_chunk *chunk;
@@ -588,7 +566,8 @@ public:
 				&& literal_value != literal(1.0);
 	}
 
-	void add_use(node *n, use_kind kind, int arg);
+	void add_use(node *n);
+	void remove_use(const node *n);
 
 	value_hash hash();
 	value_hash rel_hash();
@@ -794,8 +773,8 @@ public:
 	void replace_with(node *n);
 	void remove();
 
-	virtual value_hash hash();
-	value_hash hash_src();
+	virtual value_hash hash() const;
+	value_hash hash_src() const;
 
 	virtual bool fold_dispatch(expr_handler *ex);
 

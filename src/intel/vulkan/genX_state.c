@@ -28,8 +28,8 @@
 #include <fcntl.h>
 
 #include "anv_private.h"
-#include "genX_multisample.h"
 
+#include "common/gen_sample_positions.h"
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
@@ -52,12 +52,19 @@ genX(init_device_state)(struct anv_device *device)
       ps.PipelineSelection = _3D;
    }
 
-   anv_batch_emit(&batch, GENX(3DSTATE_VF_STATISTICS), vfs)
-      vfs.StatisticsEnable = true;
+#if GEN_GEN == 9
+   uint32_t cache_mode_1;
+   anv_pack_struct(&cache_mode_1, GENX(CACHE_MODE_1),
+                   .FloatBlendOptimizationEnable = true,
+                   .FloatBlendOptimizationEnableMask = true,
+                   .PartialResolveDisableInVC = true,
+                   .PartialResolveDisableInVCMask = true);
 
-   anv_batch_emit(&batch, GENX(3DSTATE_HS), hs);
-   anv_batch_emit(&batch, GENX(3DSTATE_TE), ts);
-   anv_batch_emit(&batch, GENX(3DSTATE_DS), ds);
+   anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+      lri.RegisterOffset = GENX(CACHE_MODE_1_num);
+      lri.DataDWord      = cache_mode_1;
+   }
+#endif
 
    anv_batch_emit(&batch, GENX(3DSTATE_AA_LINE_PARAMETERS), aa);
 
@@ -77,12 +84,12 @@ genX(init_device_state)(struct anv_device *device)
     * VkPhysicalDeviceFeatures::standardSampleLocations.
     */
    anv_batch_emit(&batch, GENX(3DSTATE_SAMPLE_PATTERN), sp) {
-      SAMPLE_POS_1X(sp._1xSample);
-      SAMPLE_POS_2X(sp._2xSample);
-      SAMPLE_POS_4X(sp._4xSample);
-      SAMPLE_POS_8X(sp._8xSample);
+      GEN_SAMPLE_POS_1X(sp._1xSample);
+      GEN_SAMPLE_POS_2X(sp._2xSample);
+      GEN_SAMPLE_POS_4X(sp._4xSample);
+      GEN_SAMPLE_POS_8X(sp._8xSample);
 #if GEN_GEN >= 9
-      SAMPLE_POS_16X(sp._16xSample);
+      GEN_SAMPLE_POS_16X(sp._16xSample);
 #endif
    }
 #endif
@@ -94,20 +101,20 @@ genX(init_device_state)(struct anv_device *device)
    return anv_device_submit_simple_batch(device, &batch);
 }
 
-static inline uint32_t
+static uint32_t
 vk_to_gen_tex_filter(VkFilter filter, bool anisotropyEnable)
 {
    switch (filter) {
    default:
       assert(!"Invalid filter");
    case VK_FILTER_NEAREST:
-      return MAPFILTER_NEAREST;
+      return anisotropyEnable ? MAPFILTER_ANISOTROPIC : MAPFILTER_NEAREST;
    case VK_FILTER_LINEAR:
       return anisotropyEnable ? MAPFILTER_ANISOTROPIC : MAPFILTER_LINEAR;
    }
 }
 
-static inline uint32_t
+static uint32_t
 vk_to_gen_max_anisotropy(float ratio)
 {
    return (anv_clamp_f(ratio, 2, 16) - 2) / 2;
@@ -159,13 +166,18 @@ VkResult genX(CreateSampler)(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
 
-   sampler = anv_alloc2(&device->alloc, pAllocator, sizeof(*sampler), 8,
+   sampler = vk_alloc2(&device->alloc, pAllocator, sizeof(*sampler), 8,
                         VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!sampler)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    uint32_t border_color_offset = device->border_colors.offset +
                                   pCreateInfo->borderColor * 64;
+
+   bool enable_min_filter_addr_rounding =
+      pCreateInfo->minFilter != VK_FILTER_NEAREST;
+   bool enable_mag_filter_addr_rounding =
+      pCreateInfo->magFilter != VK_FILTER_NEAREST;
 
    struct GENX(SAMPLER_STATE) sampler_state = {
       .SamplerDisable = false,
@@ -202,12 +214,12 @@ VkResult genX(CreateSampler)(
 #endif
 
       .MaximumAnisotropy = vk_to_gen_max_anisotropy(pCreateInfo->maxAnisotropy),
-      .RAddressMinFilterRoundingEnable = 0,
-      .RAddressMagFilterRoundingEnable = 0,
-      .VAddressMinFilterRoundingEnable = 0,
-      .VAddressMagFilterRoundingEnable = 0,
-      .UAddressMinFilterRoundingEnable = 0,
-      .UAddressMagFilterRoundingEnable = 0,
+      .RAddressMinFilterRoundingEnable = enable_min_filter_addr_rounding,
+      .RAddressMagFilterRoundingEnable = enable_mag_filter_addr_rounding,
+      .VAddressMinFilterRoundingEnable = enable_min_filter_addr_rounding,
+      .VAddressMagFilterRoundingEnable = enable_mag_filter_addr_rounding,
+      .UAddressMinFilterRoundingEnable = enable_min_filter_addr_rounding,
+      .UAddressMagFilterRoundingEnable = enable_mag_filter_addr_rounding,
       .TrilinearFilterQuality = 0,
       .NonnormalizedCoordinateEnable = pCreateInfo->unnormalizedCoordinates,
       .TCXAddressControlMode = vk_to_gen_tex_address[pCreateInfo->addressModeU],

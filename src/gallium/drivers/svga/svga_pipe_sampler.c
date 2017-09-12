@@ -272,7 +272,8 @@ svga_create_sampler_state(struct pipe_context *pipe,
       define_sampler_state_object(svga, cso, sampler);
    }
 
-   SVGA_DBG(DEBUG_VIEWS, "min %u, view(min %u, max %u) lod, mipfilter %s\n",
+   SVGA_DBG(DEBUG_SAMPLERS,
+            "New sampler: min %u, view(min %u, max %u) lod, mipfilter %s\n",
             cso->min_lod, cso->view_min_lod, cso->view_max_lod,
             cso->mipfilter == SVGA3D_TEX_FILTER_NONE ? "SVGA3D_TEX_FILTER_NONE" : "SOMETHING");
 
@@ -530,9 +531,6 @@ void
 svga_cleanup_sampler_state(struct svga_context *svga)
 {
    enum pipe_shader_type shader;
-
-   if (!svga_have_vgpu10(svga))
-      return;
 
    for (shader = 0; shader <= PIPE_SHADER_GEOMETRY; shader++) {
       unsigned i;

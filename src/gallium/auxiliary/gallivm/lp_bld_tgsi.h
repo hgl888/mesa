@@ -337,6 +337,10 @@ struct lp_build_tgsi_context
    struct lp_build_context int_bld;
 
    struct lp_build_context dbl_bld;
+
+   struct lp_build_context uint64_bld;
+   struct lp_build_context int64_bld;
+
    /** This array stores functions that are used to transform TGSI opcodes to
      * LLVM instructions.
      */
@@ -454,7 +458,6 @@ struct lp_build_tgsi_soa_context
    LLVMValueRef immediates[LP_MAX_INLINED_IMMEDIATES][TGSI_NUM_CHANNELS];
    LLVMValueRef temps[LP_MAX_INLINED_TEMPS][TGSI_NUM_CHANNELS];
    LLVMValueRef addr[LP_MAX_TGSI_ADDRS][TGSI_NUM_CHANNELS];
-   LLVMValueRef preds[LP_MAX_TGSI_PREDS][TGSI_NUM_CHANNELS];
 
    /* We allocate/use this array of temps if (1 << TGSI_FILE_TEMPORARY) is
     * set in the indirect_files field.
@@ -548,7 +551,6 @@ struct lp_build_tgsi_aos_context
    LLVMValueRef immediates[LP_MAX_INLINED_IMMEDIATES];
    LLVMValueRef temps[LP_MAX_INLINED_TEMPS];
    LLVMValueRef addr[LP_MAX_TGSI_ADDRS];
-   LLVMValueRef preds[LP_MAX_TGSI_PREDS];
 
    /* We allocate/use this array of temps if (1 << TGSI_FILE_TEMPORARY) is
     * set in the indirect_files field.
@@ -639,6 +641,13 @@ boolean
 lp_build_tgsi_inst_llvm(
    struct lp_build_tgsi_context * bld_base,
    const struct tgsi_full_instruction *inst);
+
+LLVMValueRef
+lp_build_emit_fetch_src(
+   struct lp_build_tgsi_context *bld_base,
+   const struct tgsi_full_src_register *reg,
+   enum tgsi_opcode_type stype,
+   const unsigned chan_index);
 
 LLVMValueRef
 lp_build_emit_fetch(

@@ -34,16 +34,18 @@
 
 #include "pipe/p_screen.h"
 #include "util/u_memory.h"
+#include "util/slab.h"
 #include "os/os_thread.h"
 
 #include "freedreno_batch_cache.h"
+#include "freedreno_util.h"
 
 struct fd_bo;
 
 struct fd_screen {
 	struct pipe_screen base;
 
-	pipe_mutex lock;
+	mtx_t lock;
 
 	/* it would be tempting to use pipe_reference here, but that
 	 * really doesn't work well if it isn't the first member of
@@ -55,12 +57,16 @@ struct fd_screen {
 	/* place for winsys to stash it's own stuff: */
 	void *winsys_priv;
 
+	struct slab_parent_pool transfer_pool;
+
 	uint32_t gmemsize_bytes;
 	uint32_t device_id;
 	uint32_t gpu_id;         /* 220, 305, etc */
 	uint32_t chip_id;        /* coreid:8 majorrev:8 minorrev:8 patch:8 */
 	uint32_t max_freq;
 	uint32_t max_rts;        /* max # of render targets */
+	uint32_t gmem_alignw, gmem_alignh;
+	uint32_t num_vsc_pipes;
 	bool has_timestamp;
 
 	void *compiler;          /* currently unused for a2xx */
@@ -110,11 +116,23 @@ is_a4xx(struct fd_screen *screen)
 	return (screen->gpu_id >= 400) && (screen->gpu_id < 500);
 }
 
+static inline boolean
+is_a5xx(struct fd_screen *screen)
+{
+	return (screen->gpu_id >= 500) && (screen->gpu_id < 600);
+}
+
 /* is it using the ir3 compiler (shader isa introduced with a3xx)? */
 static inline boolean
 is_ir3(struct fd_screen *screen)
 {
-	return is_a3xx(screen) || is_a4xx(screen);
+	return is_a3xx(screen) || is_a4xx(screen) || is_a5xx(screen);
+}
+
+static inline bool
+has_compute(struct fd_screen *screen)
+{
+	return is_a5xx(screen);
 }
 
 #endif /* FREEDRENO_SCREEN_H_ */

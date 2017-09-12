@@ -50,9 +50,9 @@ struct pb_cache
    /* The cache is divided into buckets for minimizing cache misses.
     * The driver controls which buffer goes into which bucket.
     */
-   struct list_head buckets[8];
+   struct list_head buckets[4];
 
-   pipe_mutex mutex;
+   mtx_t mutex;
    uint64_t cache_size;
    uint64_t max_cache_size;
    unsigned usecs;

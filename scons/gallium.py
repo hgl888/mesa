@@ -145,6 +145,30 @@ def check_cc(env, cc, expr, cpp_opt = '-E'):
     sys.stdout.write(' %s\n' % ['no', 'yes'][int(bool(result))])
     return result
 
+def check_header(env, header):
+    '''Check if the header exist'''
+
+    conf = SCons.Script.Configure(env)
+    have_header = False
+
+    if conf.CheckHeader(header):
+        have_header = True
+
+    env = conf.Finish()
+    return have_header
+
+def check_functions(env, functions):
+    '''Check if all of the functions exist'''
+
+    conf = SCons.Script.Configure(env)
+    have_functions = True
+
+    for function in functions:
+        if not conf.CheckFunc(function):
+            have_functions = False
+
+    env = conf.Finish()
+    return have_functions
 
 def check_prog(env, prog):
     """Check whether this program exists."""
@@ -291,8 +315,9 @@ def generate(env):
     # C preprocessor options
     cppdefines = []
     cppdefines += [
-        '__STDC_LIMIT_MACROS',
         '__STDC_CONSTANT_MACROS',
+        '__STDC_FORMAT_MACROS',
+        '__STDC_LIMIT_MACROS',
         'HAVE_NO_AUTOCONF',
     ]
     if env['build'] in ('debug', 'checked'):
@@ -323,13 +348,12 @@ def generate(env):
                 'GLX_DIRECT_RENDERING',
                 'GLX_INDIRECT_RENDERING',
             ]
-        if env['platform'] in ('linux', 'freebsd'):
-            cppdefines += ['HAVE_ALIAS']
-        else:
-            cppdefines += ['GLX_ALIAS_UNSUPPORTED']
 
-        if env['platform'] in ('linux', 'darwin'):
+        if check_header(env, 'xlocale.h'):
             cppdefines += ['HAVE_XLOCALE_H']
+
+        if check_functions(env, ['strtod_l', 'strtof_l']):
+            cppdefines += ['HAVE_STRTOD_L']
 
     if platform == 'windows':
         cppdefines += [
@@ -648,11 +672,10 @@ def generate(env):
     env.AddMethod(msvc2013_compat, 'MSVC2013Compat')
     env.AddMethod(unit_test, 'UnitTest')
 
-    env.PkgCheckModules('X11', ['x11', 'xext', 'xdamage', 'xfixes', 'glproto >= 1.4.13'])
+    env.PkgCheckModules('X11', ['x11', 'xext', 'xdamage >= 1.1', 'xfixes', 'glproto >= 1.4.13', 'dri2proto >= 2.8'])
     env.PkgCheckModules('XCB', ['x11-xcb', 'xcb-glx >= 1.8.1', 'xcb-dri2 >= 1.8'])
     env.PkgCheckModules('XF86VIDMODE', ['xxf86vm'])
-    env.PkgCheckModules('DRM', ['libdrm >= 2.4.38'])
-    env.PkgCheckModules('UDEV', ['libudev >= 151'])
+    env.PkgCheckModules('DRM', ['libdrm >= 2.4.75'])
 
     if env['x11']:
         env.Append(CPPPATH = env['X11_CPPPATH'])

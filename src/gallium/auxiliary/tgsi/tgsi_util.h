@@ -28,6 +28,8 @@
 #ifndef TGSI_UTIL_H
 #define TGSI_UTIL_H
 
+#include "pipe/p_shader_tokens.h"
+
 #if defined __cplusplus
 extern "C" {
 #endif

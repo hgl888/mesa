@@ -52,6 +52,7 @@ extern "C" {
 #define EGL_TEXTURE_Y_U_V_WL            0x31D7
 #define EGL_TEXTURE_Y_UV_WL             0x31D8
 #define EGL_TEXTURE_Y_XUXV_WL           0x31D9
+#define EGL_TEXTURE_EXTERNAL_WL         0x31DA
 
 struct wl_display;
 struct wl_resource;
@@ -83,6 +84,13 @@ typedef EGLBoolean (EGLAPIENTRYP PFNEGLSWAPBUFFERSREGIONNOK) (EGLDisplay dpy, EG
 #define EGL_MESA_configless_context 1
 #define EGL_NO_CONFIG_MESA			((EGLConfig)0)
 #endif
+
+#ifndef EGL_MESA_drm_image_formats
+#define EGL_MESA_drm_image_formats 1
+#define EGL_DRM_BUFFER_FORMAT_ARGB2101010_MESA  0x3290
+#define EGL_DRM_BUFFER_FORMAT_ARGB1555_MESA     0x3291
+#define EGL_DRM_BUFFER_FORMAT_RGB565_MESA       0x3292
+#endif /* EGL_MESA_drm_image_formats */
 
 #ifdef __cplusplus
 }

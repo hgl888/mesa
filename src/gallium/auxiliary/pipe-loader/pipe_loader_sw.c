@@ -100,7 +100,7 @@ pipe_loader_sw_probe_init_common(struct pipe_loader_sw_device *sdev)
    if (!sdev->dd)
       return false;
 #else
-   sdev->lib = pipe_loader_find_module(&sdev->base, PIPE_SEARCH_DIR);
+   sdev->lib = pipe_loader_find_module("swrast", PIPE_SEARCH_DIR);
    if (!sdev->lib)
       return false;
 
@@ -270,18 +270,20 @@ fail:
 static void
 pipe_loader_sw_release(struct pipe_loader_device **dev)
 {
-   struct pipe_loader_sw_device *sdev = pipe_loader_sw_device(*dev);
+   MAYBE_UNUSED struct pipe_loader_sw_device *sdev =
+      pipe_loader_sw_device(*dev);
 
 #ifndef GALLIUM_STATIC_TARGETS
    if (sdev->lib)
       util_dl_close(sdev->lib);
 #endif
 
+#ifdef HAVE_PIPE_LOADER_KMS
    if (sdev->fd != -1)
       close(sdev->fd);
+#endif
 
-   FREE(sdev);
-   *dev = NULL;
+   pipe_loader_base_release(dev);
 }
 
 static const struct drm_conf_ret *
@@ -292,7 +294,8 @@ pipe_loader_sw_configuration(struct pipe_loader_device *dev,
 }
 
 static struct pipe_screen *
-pipe_loader_sw_create_screen(struct pipe_loader_device *dev)
+pipe_loader_sw_create_screen(struct pipe_loader_device *dev,
+                             const struct pipe_screen_config *config)
 {
    struct pipe_loader_sw_device *sdev = pipe_loader_sw_device(dev);
    struct pipe_screen *screen;

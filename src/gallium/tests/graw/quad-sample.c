@@ -99,7 +99,7 @@ static void set_vertices( void )
 
    vbuf.stride = sizeof( struct vertex );
    vbuf.buffer_offset = 0;
-   vbuf.buffer = pipe_buffer_create_with_data(ctx,
+   vbuf.buffer.resource = pipe_buffer_create_with_data(ctx,
                                               PIPE_BIND_VERTEX_BUFFER,
                                               PIPE_USAGE_DEFAULT,
                                               sizeof(vertices),
@@ -209,6 +209,7 @@ static void init_tex( void )
    tex2d[1][1][3] = 255;
 #endif
 
+   memset(&templat, 0, sizeof(templat));
    templat.target = PIPE_TEXTURE_2D;
    templat.format = PIPE_FORMAT_B8G8R8A8_UNORM;
    templat.width0 = SIZE;
@@ -317,6 +318,7 @@ static void init( void )
    if (ctx == NULL)
       exit(3);
 
+   memset(&templat, 0, sizeof(templat));
    templat.target = PIPE_TEXTURE_2D;
    templat.format = formats[i];
    templat.width0 = WIDTH;

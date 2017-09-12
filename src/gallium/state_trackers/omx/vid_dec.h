@@ -34,8 +34,6 @@
 #ifndef OMX_VID_DEC_H
 #define OMX_VID_DEC_H
 
-#include <X11/Xlib.h>
-
 #include <string.h>
 
 #include <OMX_Types.h>
@@ -47,7 +45,6 @@
 #include <bellagio/omx_base_video_port.h>
 
 #include "pipe/p_video_state.h"
-#include "state_tracker/drm_driver.h"
 #include "os/os_thread.h"
 #include "util/list.h"
 
@@ -100,6 +97,8 @@ DERIVEDCLASS(vid_dec_PrivateType, omx_base_filter_PrivateType)
       struct { \
          unsigned temporal_id; \
          unsigned level_idc; \
+         unsigned pic_width_in_luma_samples; \
+         unsigned pic_height_in_luma_samples; \
          bool IdrPicFlag; \
          int slice_prev_poc; \
          void *ref_pic_set_list; \
@@ -127,6 +126,7 @@ DERIVEDCLASS(vid_dec_PrivateType, omx_base_filter_PrivateType)
    bool frame_started; \
    unsigned bytes_left; \
    const void *slice; \
+   bool disable_tunnel; \
    struct vl_compositor compositor; \
    struct vl_compositor_state cstate;
 ENDCLASS(vid_dec_PrivateType)

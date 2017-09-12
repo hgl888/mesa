@@ -45,7 +45,7 @@ LOCAL_CFLAGS := \
 
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/egl/main \
-	$(MESA_TOP)/src/egl/drivers/dri2 \
+	$(MESA_TOP)/src/egl/drivers/dri2
 
 LOCAL_STATIC_LIBRARIES := \
 	libmesa_loader
@@ -56,28 +56,21 @@ LOCAL_SHARED_LIBRARIES := \
 	liblog \
 	libcutils \
 	libgralloc_drm \
+	libsync
 
-ifeq ($(shell echo "$(MESA_ANDROID_VERSION) >= 4.2" | bc),1)
-LOCAL_SHARED_LIBRARIES += libsync
+# This controls enabling building of driver libraries
+ifneq ($(HAVE_I915_DRI),)
+LOCAL_REQUIRED_MODULES += i915_dri
 endif
-
-ifeq ($(strip $(MESA_BUILD_CLASSIC)),true)
-# require i915_dri and/or i965_dri
-LOCAL_REQUIRED_MODULES += \
-	$(addsuffix _dri, $(filter i915 i965, $(MESA_GPU_DRIVERS)))
-endif # MESA_BUILD_CLASSIC
-
-ifeq ($(strip $(MESA_BUILD_GALLIUM)),true)
+ifneq ($(HAVE_I965_DRI),)
+LOCAL_REQUIRED_MODULES += i965_dri
+endif
+ifneq ($(MESA_BUILD_GALLIUM),)
 LOCAL_REQUIRED_MODULES += gallium_dri
-endif # MESA_BUILD_GALLIUM
-
+endif
 
 LOCAL_MODULE := libGLES_mesa
-ifeq ($(MESA_LOLLIPOP_BUILD),true)
 LOCAL_MODULE_RELATIVE_PATH := egl
-else
-LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/egl
-endif
 
 include $(MESA_COMMON_MK)
 include $(BUILD_SHARED_LIBRARY)

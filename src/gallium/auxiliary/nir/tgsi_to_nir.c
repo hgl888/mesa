@@ -314,8 +314,11 @@ ttn_emit_declaration(struct ttn_compile *c)
              file == TGSI_FILE_CONSTANT);
 
       /* nothing to do for UBOs: */
-      if ((file == TGSI_FILE_CONSTANT) && decl->Declaration.Dimension)
+      if ((file == TGSI_FILE_CONSTANT) && decl->Declaration.Dimension) {
+         b->shader->info.num_ubos =
+            MAX2(b->shader->info.num_ubos, decl->Dim.Index2D);
          return;
+      }
 
       if ((file == TGSI_FILE_INPUT) || (file == TGSI_FILE_OUTPUT)) {
          is_array = (is_array && decl->Declaration.Array &&
@@ -621,7 +624,7 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
          assert(!dim);
          break;
       case TGSI_FILE_CONSTANT:
-         if (dim) {
+         if (dim && (dim->Index > 0 || dim->Indirect)) {
             op = nir_intrinsic_load_ubo;
          } else {
             op = nir_intrinsic_load_uniform;
@@ -863,7 +866,7 @@ ttn_move_dest(nir_builder *b, nir_alu_dest dest, nir_ssa_def *def)
 static void
 ttn_arl(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 {
-   ttn_move_dest(b, dest, nir_f2i(b, nir_ffloor(b, src[0])));
+   ttn_move_dest(b, dest, nir_f2i32(b, nir_ffloor(b, src[0])));
 }
 
 /* EXP - Approximate Exponential Base 2
@@ -953,23 +956,6 @@ ttn_lit(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
    }
 }
 
-/* SCS - Sine Cosine
- *   dst.x = \cos{src.x}
- *   dst.y = \sin{src.x}
- *   dst.z = 0.0
- *   dst.w = 1.0
- */
-static void
-ttn_scs(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
-{
-   ttn_move_dest_masked(b, dest, nir_fcos(b, ttn_channel(b, src[0], X)),
-                        TGSI_WRITEMASK_X);
-   ttn_move_dest_masked(b, dest, nir_fsin(b, ttn_channel(b, src[0], X)),
-                        TGSI_WRITEMASK_Y);
-   ttn_move_dest_masked(b, dest, nir_imm_float(b, 0.0), TGSI_WRITEMASK_Z);
-   ttn_move_dest_masked(b, dest, nir_imm_float(b, 1.0), TGSI_WRITEMASK_W);
-}
-
 static void
 ttn_sle(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 {
@@ -980,36 +966,6 @@ static void
 ttn_sgt(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 {
    ttn_move_dest(b, dest, nir_slt(b, src[1], src[0]));
-}
-
-static void
-ttn_clamp(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
-{
-   ttn_move_dest(b, dest, nir_fmin(b, nir_fmax(b, src[0], src[1]), src[2]));
-}
-
-static void
-ttn_xpd(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
-{
-   ttn_move_dest_masked(b, dest,
-                        nir_fsub(b,
-                                 nir_fmul(b,
-                                          ttn_swizzle(b, src[0], Y, Z, X, X),
-                                          ttn_swizzle(b, src[1], Z, X, Y, X)),
-                                 nir_fmul(b,
-                                          ttn_swizzle(b, src[1], Y, Z, X, X),
-                                          ttn_swizzle(b, src[0], Z, X, Y, X))),
-                        TGSI_WRITEMASK_XYZ);
-   ttn_move_dest_masked(b, dest, nir_imm_float(b, 1.0), TGSI_WRITEMASK_W);
-}
-
-static void
-ttn_dp2a(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
-{
-   ttn_move_dest(b, dest,
-                 ttn_channel(b, nir_fadd(b, nir_fdot2(b, src[0], src[1]),
-                                         src[2]),
-                             X));
 }
 
 static void
@@ -1028,13 +984,6 @@ static void
 ttn_dp4(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
 {
    ttn_move_dest(b, dest, nir_fdot4(b, src[0], src[1]));
-}
-
-static void
-ttn_dph(nir_builder *b, nir_op op, nir_alu_dest dest, nir_ssa_def **src)
-{
-   ttn_move_dest(b, dest, nir_fadd(b, nir_fdot3(b, src[0], src[1]),
-                                   ttn_channel(b, src[1], W)));
 }
 
 static void
@@ -1340,6 +1289,9 @@ ttn_tex(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
    case GLSL_SAMPLER_DIM_CUBE:
       instr->coord_components = 3;
       break;
+   case GLSL_SAMPLER_DIM_SUBPASS:
+   case GLSL_SAMPLER_DIM_SUBPASS_MS:
+      unreachable("invalid sampler_dim");
    }
 
    if (instr->is_array)
@@ -1411,15 +1363,17 @@ ttn_tex(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
    }
 
    if (tgsi_inst->Instruction.Opcode == TGSI_OPCODE_TXD) {
+      instr->src[src_number].src_type = nir_tex_src_ddx;
       instr->src[src_number].src =
          nir_src_for_ssa(nir_swizzle(b, src[1], SWIZ(X, Y, Z, W),
-              instr->coord_components, false));
-      instr->src[src_number].src_type = nir_tex_src_ddx;
+				     nir_tex_instr_src_size(instr, src_number),
+				     false));
       src_number++;
+      instr->src[src_number].src_type = nir_tex_src_ddy;
       instr->src[src_number].src =
          nir_src_for_ssa(nir_swizzle(b, src[2], SWIZ(X, Y, Z, W),
-              instr->coord_components, false));
-      instr->src[src_number].src_type = nir_tex_src_ddy;
+				     nir_tex_instr_src_size(instr, src_number),
+				     false));
       src_number++;
    }
 
@@ -1431,7 +1385,7 @@ ttn_tex(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
       else
          instr->src[src_number].src = nir_src_for_ssa(ttn_channel(b, src[0], Z));
 
-      instr->src[src_number].src_type = nir_tex_src_comparitor;
+      instr->src[src_number].src_type = nir_tex_src_comparator;
       src_number++;
    }
 
@@ -1462,7 +1416,9 @@ ttn_tex(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
 
    assert(src_number == num_srcs);
 
-   nir_ssa_dest_init(&instr->instr, &instr->dest, 4, 32, NULL);
+   nir_ssa_dest_init(&instr->instr, &instr->dest,
+		     nir_tex_instr_dest_size(instr),
+		     32, NULL);
    nir_builder_instr_insert(b, &instr->instr);
 
    /* Resolve the writemask on the texture op. */
@@ -1501,7 +1457,8 @@ ttn_txq(struct ttn_compile *c, nir_alu_dest dest, nir_ssa_def **src)
    txs->src[0].src = nir_src_for_ssa(ttn_channel(b, src[0], X));
    txs->src[0].src_type = nir_tex_src_lod;
 
-   nir_ssa_dest_init(&txs->instr, &txs->dest, 3, 32, NULL);
+   nir_ssa_dest_init(&txs->instr, &txs->dest,
+		     nir_tex_instr_dest_size(txs), 32, NULL);
    nir_builder_instr_insert(b, &txs->instr);
 
    nir_ssa_dest_init(&qlv->instr, &qlv->dest, 1, 32, NULL);
@@ -1529,20 +1486,14 @@ static const nir_op op_trans[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_SLT] = nir_op_slt,
    [TGSI_OPCODE_SGE] = nir_op_sge,
    [TGSI_OPCODE_MAD] = nir_op_ffma,
-   [TGSI_OPCODE_SUB] = nir_op_fsub,
    [TGSI_OPCODE_LRP] = 0,
    [TGSI_OPCODE_SQRT] = nir_op_fsqrt,
-   [TGSI_OPCODE_DP2A] = 0,
    [TGSI_OPCODE_FRC] = nir_op_ffract,
-   [TGSI_OPCODE_CLAMP] = 0,
    [TGSI_OPCODE_FLR] = nir_op_ffloor,
    [TGSI_OPCODE_ROUND] = nir_op_fround_even,
    [TGSI_OPCODE_EX2] = nir_op_fexp2,
    [TGSI_OPCODE_LG2] = nir_op_flog2,
    [TGSI_OPCODE_POW] = nir_op_fpow,
-   [TGSI_OPCODE_XPD] = 0,
-   [TGSI_OPCODE_ABS] = nir_op_fabs,
-   [TGSI_OPCODE_DPH] = 0,
    [TGSI_OPCODE_COS] = nir_op_fcos,
    [TGSI_OPCODE_DDX] = nir_op_fddx,
    [TGSI_OPCODE_DDY] = nir_op_fddy,
@@ -1571,7 +1522,6 @@ static const nir_op op_trans[TGSI_OPCODE_LAST] = {
 
    [TGSI_OPCODE_SSG] = nir_op_fsign,
    [TGSI_OPCODE_CMP] = 0,
-   [TGSI_OPCODE_SCS] = 0,
    [TGSI_OPCODE_TXB] = 0,
    [TGSI_OPCODE_DIV] = nir_op_fdiv,
    [TGSI_OPCODE_DP2] = 0,
@@ -1586,11 +1536,8 @@ static const nir_op op_trans[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_DDX_FINE] = nir_op_fddx_fine,
    [TGSI_OPCODE_DDY_FINE] = nir_op_fddy_fine,
 
-   [TGSI_OPCODE_PUSHA] = 0, /* XXX */
-   [TGSI_OPCODE_POPA] = 0, /* XXX */
-
    [TGSI_OPCODE_CEIL] = nir_op_fceil,
-   [TGSI_OPCODE_I2F] = nir_op_i2f,
+   [TGSI_OPCODE_I2F] = nir_op_i2f32,
    [TGSI_OPCODE_NOT] = nir_op_inot,
    [TGSI_OPCODE_TRUNC] = nir_op_ftrunc,
    [TGSI_OPCODE_SHL] = nir_op_ishl,
@@ -1598,7 +1545,6 @@ static const nir_op op_trans[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_OR] = nir_op_ior,
    [TGSI_OPCODE_MOD] = nir_op_umod,
    [TGSI_OPCODE_XOR] = nir_op_ixor,
-   [TGSI_OPCODE_SAD] = 0, /* XXX */
    [TGSI_OPCODE_TXF] = 0,
    [TGSI_OPCODE_TXQ] = 0,
 
@@ -1612,22 +1558,17 @@ static const nir_op op_trans[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_ENDLOOP] = 0,
    [TGSI_OPCODE_ENDSUB] = 0, /* XXX: no function calls */
 
-   [TGSI_OPCODE_TXQ_LZ] = 0,
    [TGSI_OPCODE_NOP] = 0,
    [TGSI_OPCODE_FSEQ] = nir_op_feq,
    [TGSI_OPCODE_FSGE] = nir_op_fge,
    [TGSI_OPCODE_FSLT] = nir_op_flt,
    [TGSI_OPCODE_FSNE] = nir_op_fne,
 
-   /* No control flow yet */
-   [TGSI_OPCODE_CALLNZ] = 0, /* XXX */
-   [TGSI_OPCODE_BREAKC] = 0, /* not emitted by glsl_to_tgsi.cpp */
-
    [TGSI_OPCODE_KILL_IF] = 0,
 
    [TGSI_OPCODE_END] = 0,
 
-   [TGSI_OPCODE_F2I] = nir_op_f2i,
+   [TGSI_OPCODE_F2I] = nir_op_f2i32,
    [TGSI_OPCODE_IDIV] = nir_op_idiv,
    [TGSI_OPCODE_IMAX] = nir_op_imax,
    [TGSI_OPCODE_IMIN] = nir_op_imin,
@@ -1635,8 +1576,8 @@ static const nir_op op_trans[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_ISGE] = nir_op_ige,
    [TGSI_OPCODE_ISHR] = nir_op_ishr,
    [TGSI_OPCODE_ISLT] = nir_op_ilt,
-   [TGSI_OPCODE_F2U] = nir_op_f2u,
-   [TGSI_OPCODE_U2F] = nir_op_u2f,
+   [TGSI_OPCODE_F2U] = nir_op_f2u32,
+   [TGSI_OPCODE_U2F] = nir_op_u2f32,
    [TGSI_OPCODE_UADD] = nir_op_iadd,
    [TGSI_OPCODE_UDIV] = nir_op_udiv,
    [TGSI_OPCODE_UMAD] = 0,
@@ -1761,14 +1702,6 @@ ttn_emit_instruction(struct ttn_compile *c)
       ttn_lit(b, op_trans[tgsi_op], dest, src);
       break;
 
-   case TGSI_OPCODE_CLAMP:
-      ttn_clamp(b, op_trans[tgsi_op], dest, src);
-      break;
-
-   case TGSI_OPCODE_XPD:
-      ttn_xpd(b, op_trans[tgsi_op], dest, src);
-      break;
-
    case TGSI_OPCODE_DP2:
       ttn_dp2(b, op_trans[tgsi_op], dest, src);
       break;
@@ -1779,14 +1712,6 @@ ttn_emit_instruction(struct ttn_compile *c)
 
    case TGSI_OPCODE_DP4:
       ttn_dp4(b, op_trans[tgsi_op], dest, src);
-      break;
-
-   case TGSI_OPCODE_DP2A:
-      ttn_dp2a(b, op_trans[tgsi_op], dest, src);
-      break;
-
-   case TGSI_OPCODE_DPH:
-      ttn_dph(b, op_trans[tgsi_op], dest, src);
       break;
 
    case TGSI_OPCODE_UMAD:
@@ -1813,10 +1738,6 @@ ttn_emit_instruction(struct ttn_compile *c)
       ttn_ucmp(b, op_trans[tgsi_op], dest, src);
       break;
 
-   case TGSI_OPCODE_SCS:
-      ttn_scs(b, op_trans[tgsi_op], dest, src);
-      break;
-
    case TGSI_OPCODE_SGT:
       ttn_sgt(b, op_trans[tgsi_op], dest, src);
       break;
@@ -1837,7 +1758,6 @@ ttn_emit_instruction(struct ttn_compile *c)
    case TGSI_OPCODE_TEX2:
    case TGSI_OPCODE_TXL2:
    case TGSI_OPCODE_TXB2:
-   case TGSI_OPCODE_TXQ_LZ:
    case TGSI_OPCODE_TXF:
    case TGSI_OPCODE_TG4:
    case TGSI_OPCODE_LODQ:

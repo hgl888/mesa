@@ -114,6 +114,12 @@ st_BeginQuery(struct gl_context *ctx, struct gl_query_object *q)
    case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
       type = PIPE_QUERY_PRIMITIVES_EMITTED;
       break;
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      type = PIPE_QUERY_SO_OVERFLOW_PREDICATE;
+      break;
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      type = PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE;
+      break;
    case GL_TIME_ELAPSED:
       if (st->has_time_elapsed)
          type = PIPE_QUERY_TIME_ELAPSED;
@@ -254,6 +260,8 @@ get_query_result(struct pipe_context *pipe,
    default:
       switch (stq->type) {
       case PIPE_QUERY_OCCLUSION_PREDICATE:
+      case PIPE_QUERY_SO_OVERFLOW_PREDICATE:
+      case PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE:
          stq->base.Result = !!data.b;
          break;
       default:

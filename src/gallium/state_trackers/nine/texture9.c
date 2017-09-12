@@ -161,7 +161,7 @@ NineTexture9_ctor( struct NineTexture9 *This,
          * apps access sublevels of texture even if they locked only first
          * level) */
         level_offsets = alloca(sizeof(unsigned) * (info->last_level + 1));
-        user_buffer = align_malloc(
+        user_buffer = align_calloc(
             nine_format_get_size_and_offsets(pf, level_offsets,
                                              Width, Height,
                                              info->last_level), 32);
@@ -244,6 +244,8 @@ NineTexture9_GetLevelDesc( struct NineTexture9 *This,
                            UINT Level,
                            D3DSURFACE_DESC *pDesc )
 {
+    DBG("This=%p Level=%d pDesc=%p\n", This, Level, pDesc);
+
     user_assert(Level <= This->base.base.info.last_level, D3DERR_INVALIDCALL);
     user_assert(Level == 0 || !(This->base.base.usage & D3DUSAGE_AUTOGENMIPMAP),
                 D3DERR_INVALIDCALL);
@@ -258,6 +260,8 @@ NineTexture9_GetSurfaceLevel( struct NineTexture9 *This,
                               UINT Level,
                               IDirect3DSurface9 **ppSurfaceLevel )
 {
+    DBG("This=%p Level=%d ppSurfaceLevel=%p\n", This, Level, ppSurfaceLevel);
+
     user_assert(Level <= This->base.base.info.last_level, D3DERR_INVALIDCALL);
     user_assert(Level == 0 || !(This->base.base.usage & D3DUSAGE_AUTOGENMIPMAP),
                 D3DERR_INVALIDCALL);
@@ -326,9 +330,13 @@ NineTexture9_AddDirtyRect( struct NineTexture9 *This,
         u_box_origin_2d(This->base.base.info.width0,
                         This->base.base.info.height0, &This->dirty_rect);
     } else {
-        struct pipe_box box;
-        rect_to_pipe_box_clamp(&box, pDirtyRect);
-        u_box_union_2d(&This->dirty_rect, &This->dirty_rect, &box);
+        if (This->dirty_rect.width == 0) {
+            rect_to_pipe_box_clamp(&This->dirty_rect, pDirtyRect);
+        } else {
+            struct pipe_box box;
+            rect_to_pipe_box_clamp(&box, pDirtyRect);
+            u_box_union_2d(&This->dirty_rect, &This->dirty_rect, &box);
+        }
         (void) u_box_clip_2d(&This->dirty_rect, &This->dirty_rect,
                              This->base.base.info.width0,
                              This->base.base.info.height0);
@@ -341,9 +349,9 @@ IDirect3DTexture9Vtbl NineTexture9_vtable = {
     (void *)NineUnknown_AddRef,
     (void *)NineUnknown_Release,
     (void *)NineUnknown_GetDevice, /* actually part of Resource9 iface */
-    (void *)NineResource9_SetPrivateData,
-    (void *)NineResource9_GetPrivateData,
-    (void *)NineResource9_FreePrivateData,
+    (void *)NineUnknown_SetPrivateData,
+    (void *)NineUnknown_GetPrivateData,
+    (void *)NineUnknown_FreePrivateData,
     (void *)NineResource9_SetPriority,
     (void *)NineResource9_GetPriority,
     (void *)NineBaseTexture9_PreLoad,

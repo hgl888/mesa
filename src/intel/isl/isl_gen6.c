@@ -25,37 +25,20 @@
 #include "isl_priv.h"
 
 bool
-gen6_choose_msaa_layout(const struct isl_device *dev,
-                  const struct isl_surf_init_info *info,
-                  enum isl_tiling tiling,
-                  enum isl_msaa_layout *msaa_layout)
+isl_gen6_choose_msaa_layout(const struct isl_device *dev,
+                            const struct isl_surf_init_info *info,
+                            enum isl_tiling tiling,
+                            enum isl_msaa_layout *msaa_layout)
 {
-   const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
-
    assert(ISL_DEV_GEN(dev) == 6);
    assert(info->samples >= 1);
 
    if (info->samples == 1) {
       *msaa_layout = ISL_MSAA_LAYOUT_NONE;
-      return false;
+      return true;
    }
 
-   /* From the Sandybridge PRM, Volume 4 Part 1 p72, SURFACE_STATE, Surface
-    * Format:
-    *
-    *    If Number of Multisamples is set to a value other than
-    *    MULTISAMPLECOUNT_1, this field cannot be set to the following
-    *    formats:
-    *
-    *       - any format with greater than 64 bits per element
-    *       - any compressed texture format (BC*)
-    *       - any YCRCB* format
-    */
-   if (fmtl->bpb > 64)
-      return false;
-   if (isl_format_is_compressed(info->format))
-      return false;
-   if (isl_format_is_yuv(info->format))
+   if (!isl_format_supports_multisampling(dev->info, info->format))
       return false;
 
    /* From the Sandybridge PRM, Volume 4 Part 1 p85, SURFACE_STATE, Number of
@@ -83,12 +66,12 @@ gen6_choose_msaa_layout(const struct isl_device *dev,
 }
 
 void
-gen6_choose_image_alignment_el(const struct isl_device *dev,
-                               const struct isl_surf_init_info *restrict info,
-                               enum isl_tiling tiling,
-                               enum isl_dim_layout dim_layout,
-                               enum isl_msaa_layout msaa_layout,
-                               struct isl_extent3d *image_align_el)
+isl_gen6_choose_image_alignment_el(const struct isl_device *dev,
+                                   const struct isl_surf_init_info *restrict info,
+                                   enum isl_tiling tiling,
+                                   enum isl_dim_layout dim_layout,
+                                   enum isl_msaa_layout msaa_layout,
+                                   struct isl_extent3d *image_align_el)
 {
    /* Handled by isl_choose_image_alignment_el */
    assert(info->format != ISL_FORMAT_HIZ);
@@ -105,6 +88,8 @@ gen6_choose_image_alignment_el(const struct isl_device *dev,
     *    | format                 | halign | valign |
     *    +------------------------+--------+--------+
     *    | YUV 4:2:2 formats      |      4 |      * |
+    *    | BC1-5                  |      4 |      4 |
+    *    | FXT1                   |      8 |      4 |
     *    | uncompressed formats   |      4 |      * |
     *    +------------------------+--------+--------+
     *
@@ -127,12 +112,21 @@ gen6_choose_image_alignment_el(const struct isl_device *dev,
     */
 
    if (isl_format_is_compressed(info->format)) {
+      /* Compressed formats have an alignment equal to their block size */
       *image_align_el = isl_extent3d(1, 1, 1);
       return;
    }
 
-   if (isl_format_is_yuv(info->format)) {
+   /* Separate stencil requires 4x2 alignment */
+   if (isl_surf_usage_is_stencil(info->usage) &&
+       info->format == ISL_FORMAT_R8_UINT) {
       *image_align_el = isl_extent3d(4, 2, 1);
+      return;
+   }
+
+   /* Depth or combined depth stencil surfaces require 4x4 alignment */
+   if (isl_surf_usage_is_depth_or_stencil(info->usage)) {
+      *image_align_el = isl_extent3d(4, 4, 1);
       return;
    }
 
@@ -141,24 +135,9 @@ gen6_choose_image_alignment_el(const struct isl_device *dev,
       return;
    }
 
-   if (isl_surf_usage_is_depth_or_stencil(info->usage) &&
-       !ISL_DEV_USE_SEPARATE_STENCIL(dev)) {
-      /* interleaved depthstencil buffer */
-      *image_align_el = isl_extent3d(4, 4, 1);
-      return;
-   }
-
-   if (isl_surf_usage_is_depth(info->usage)) {
-      /* separate depth buffer */
-      *image_align_el = isl_extent3d(4, 4, 1);
-      return;
-   }
-
-   if (isl_surf_usage_is_stencil(info->usage)) {
-      /* separate stencil buffer */
-      *image_align_el = isl_extent3d(4, 2, 1);
-      return;
-   }
-
+   /* For everything else, 4x2 is always a valid alignment.  Since this is
+    * also the smallest alignment we can specify, we use 4x2 for everything
+    * else because it uses the least memory.
+    */
    *image_align_el = isl_extent3d(4, 2, 1);
 }

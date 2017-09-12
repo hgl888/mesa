@@ -191,7 +191,8 @@ get_query_result_vgpu9(struct svga_context *svga, struct svga_query *sq,
    if (state == SVGA3D_QUERYSTATE_PENDING) {
       if (!wait)
          return FALSE;
-      sws->fence_finish(sws, sq->fence, SVGA_FENCE_FLAG_QUERY);
+      sws->fence_finish(sws, sq->fence, PIPE_TIMEOUT_INFINITE,
+                        SVGA_FENCE_FLAG_QUERY);
       state = sq->queryResult->state;
    }
 
@@ -265,7 +266,7 @@ allocate_query_block(struct svga_context *svga)
        * any empty memory block around that can be freed up.
        */
       index = -1;
-      for (i = 0; i < SVGA_QUERY_MAX && index == -1; i++) {
+      for (i = 0; i < SVGA3D_QUERYTYPE_MAX && index == -1; i++) {
          struct svga_qmem_alloc_entry *alloc_entry;
          struct svga_qmem_alloc_entry *prev_alloc_entry = NULL;
 
@@ -380,7 +381,7 @@ allocate_query(struct svga_context *svga,
    int slot_index = -1;
    unsigned offset;
 
-   assert(type < SVGA_QUERY_MAX);
+   assert(type < SVGA3D_QUERYTYPE_MAX);
 
    alloc_entry = svga->gb_query_map[type];
 
@@ -453,7 +454,7 @@ destroy_gb_query_obj(struct svga_context *svga)
    struct svga_winsys_screen *sws = svga_screen(svga->pipe.screen)->sws;
    unsigned i;
 
-   for (i = 0; i < SVGA_QUERY_MAX; i++) {
+   for (i = 0; i < SVGA3D_QUERYTYPE_MAX; i++) {
       struct svga_qmem_alloc_entry *alloc_entry, *next;
       alloc_entry = svga->gb_query_map[i];
       while (alloc_entry) {
@@ -638,11 +639,11 @@ get_query_result_vgpu10(struct svga_context *svga, struct svga_query *sq,
 
    sws->query_get_result(sws, sq->gb_query, sq->offset, &queryState, result, resultLen);
 
-   if (!sq->fence) {
-      /* The query hasn't been submitted yet.  We need to submit it now
-       * since the GL spec says "Querying the state for a given occlusion
-       * query forces that occlusion query to complete within a finite amount
-       * of time."
+   if (queryState != SVGA3D_QUERYSTATE_SUCCEEDED && !sq->fence) {
+      /* We don't have the query result yet, and the query hasn't been
+       * submitted.  We need to submit it now since the GL spec says
+       * "Querying the state for a given occlusion query forces that
+       * occlusion query to complete within a finite amount of time."
        */
       svga_context_flush(svga, &sq->fence);
    }
@@ -651,7 +652,8 @@ get_query_result_vgpu10(struct svga_context *svga, struct svga_query *sq,
        queryState == SVGA3D_QUERYSTATE_NEW) {
       if (!wait)
          return FALSE;
-      sws->fence_finish(sws, sq->fence, SVGA_FENCE_FLAG_QUERY);
+      sws->fence_finish(sws, sq->fence, PIPE_TIMEOUT_INFINITE,
+                        SVGA_FENCE_FLAG_QUERY);
       sws->query_get_result(sws, sq->gb_query, sq->offset, &queryState, result, resultLen);
    }
 
@@ -731,7 +733,8 @@ svga_create_query(struct pipe_context *pipe,
    case SVGA_QUERY_NUM_FALLBACKS:
    case SVGA_QUERY_NUM_FLUSHES:
    case SVGA_QUERY_NUM_VALIDATIONS:
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
    case SVGA_QUERY_COMMAND_BUFFER_SIZE:
    case SVGA_QUERY_SURFACE_WRITE_FLUSHES:
@@ -746,6 +749,7 @@ svga_create_query(struct pipe_context *pipe,
    case SVGA_QUERY_NUM_BUFFER_UPLOADS:
    case SVGA_QUERY_NUM_CONST_BUF_UPDATES:
    case SVGA_QUERY_NUM_CONST_UPDATES:
+   case SVGA_QUERY_NUM_FAILED_ALLOCATIONS:
       break;
    case SVGA_QUERY_FLUSH_TIME:
    case SVGA_QUERY_MAP_BUFFER_TIME:
@@ -808,7 +812,8 @@ svga_destroy_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_NUM_FLUSHES:
    case SVGA_QUERY_NUM_VALIDATIONS:
    case SVGA_QUERY_MAP_BUFFER_TIME:
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
    case SVGA_QUERY_COMMAND_BUFFER_SIZE:
    case SVGA_QUERY_FLUSH_TIME:
@@ -824,6 +829,7 @@ svga_destroy_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_NUM_BUFFER_UPLOADS:
    case SVGA_QUERY_NUM_CONST_BUF_UPDATES:
    case SVGA_QUERY_NUM_CONST_UPDATES:
+   case SVGA_QUERY_NUM_FAILED_ALLOCATIONS:
       /* nothing */
       break;
    default:
@@ -896,8 +902,11 @@ svga_begin_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_MAP_BUFFER_TIME:
       sq->begin_count = svga->hud.map_buffer_time;
       break;
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
-      sq->begin_count = svga->hud.num_resources_mapped;
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+      sq->begin_count = svga->hud.num_buffers_mapped;
+      break;
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
+      sq->begin_count = svga->hud.num_textures_mapped;
       break;
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
       sq->begin_count = svga->hud.num_bytes_uploaded;
@@ -932,6 +941,7 @@ svga_begin_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_NUM_STATE_OBJECTS:
    case SVGA_QUERY_NUM_SURFACE_VIEWS:
    case SVGA_QUERY_NUM_GENERATE_MIPMAP:
+   case SVGA_QUERY_NUM_FAILED_ALLOCATIONS:
       /* nothing */
       break;
    default:
@@ -981,11 +991,6 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
       }
       assert(ret == PIPE_OK);
       (void) ret;
-      /* TODO: Delay flushing. We don't really need to flush here, just ensure
-       * that there is one flush before svga_get_query_result attempts to get
-       * the result.
-       */
-      svga_context_flush(svga, NULL);
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
    case PIPE_QUERY_PRIMITIVES_EMITTED:
@@ -1010,8 +1015,11 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_MAP_BUFFER_TIME:
       sq->end_count = svga->hud.map_buffer_time;
       break;
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
-      sq->end_count = svga->hud.num_resources_mapped;
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+      sq->end_count = svga->hud.num_buffers_mapped;
+      break;
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
+      sq->end_count = svga->hud.num_textures_mapped;
       break;
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
       sq->end_count = svga->hud.num_bytes_uploaded;
@@ -1046,6 +1054,7 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_NUM_STATE_OBJECTS:
    case SVGA_QUERY_NUM_SURFACE_VIEWS:
    case SVGA_QUERY_NUM_GENERATE_MIPMAP:
+   case SVGA_QUERY_NUM_FAILED_ALLOCATIONS:
       /* nothing */
       break;
    default:
@@ -1142,7 +1151,8 @@ svga_get_query_result(struct pipe_context *pipe,
    case SVGA_QUERY_NUM_FLUSHES:
    case SVGA_QUERY_NUM_VALIDATIONS:
    case SVGA_QUERY_MAP_BUFFER_TIME:
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
    case SVGA_QUERY_COMMAND_BUFFER_SIZE:
    case SVGA_QUERY_FLUSH_TIME:
@@ -1178,6 +1188,9 @@ svga_get_query_result(struct pipe_context *pipe,
    case SVGA_QUERY_NUM_GENERATE_MIPMAP:
       vresult->u64 = svga->hud.num_generate_mipmap;
       break;
+   case SVGA_QUERY_NUM_FAILED_ALLOCATIONS:
+      vresult->u64 = svgascreen->hud.num_failed_allocations;
+      break;
    default:
       assert(!"unexpected query type in svga_get_query_result");
    }
@@ -1189,7 +1202,7 @@ svga_get_query_result(struct pipe_context *pipe,
 
 static void
 svga_render_condition(struct pipe_context *pipe, struct pipe_query *q,
-                      boolean condition, uint mode)
+                      boolean condition, enum pipe_render_cond_flag mode)
 {
    struct svga_context *svga = svga_context(pipe);
    struct svga_winsys_screen *sws = svga_screen(svga->pipe.screen)->sws;
@@ -1219,7 +1232,8 @@ svga_render_condition(struct pipe_context *pipe, struct pipe_query *q,
 
       if ((mode == PIPE_RENDER_COND_WAIT ||
            mode == PIPE_RENDER_COND_BY_REGION_WAIT) && sq->fence) {
-         sws->fence_finish(sws, sq->fence, SVGA_FENCE_FLAG_QUERY);
+         sws->fence_finish(sws, sq->fence, PIPE_TIMEOUT_INFINITE,
+                           SVGA_FENCE_FLAG_QUERY);
       }
    }
    /*
@@ -1235,7 +1249,11 @@ svga_render_condition(struct pipe_context *pipe, struct pipe_query *q,
          ret = SVGA3D_vgpu10_SetPredication(svga->swc, queryId,
                                             (uint32) condition);
       }
+      svga->pred.query_id = queryId;
+      svga->pred.cond = condition;
    }
+
+   svga->render_condition = (sq != NULL);
 }
 
 
@@ -1261,6 +1279,46 @@ svga_get_timestamp(struct pipe_context *pipe)
 static void
 svga_set_active_query_state(struct pipe_context *pipe, boolean enable)
 {
+}
+
+
+/**
+ * \brief Toggle conditional rendering if already enabled
+ *
+ * \param svga[in]  The svga context
+ * \param render_condition_enabled[in]  Whether to ignore requests to turn
+ * conditional rendering off
+ * \param on[in]  Whether to turn conditional rendering on or off
+ */
+void
+svga_toggle_render_condition(struct svga_context *svga,
+                             boolean render_condition_enabled,
+                             boolean on)
+{
+   SVGA3dQueryId query_id;
+   enum pipe_error ret;
+
+   if (render_condition_enabled ||
+       svga->pred.query_id == SVGA3D_INVALID_ID) {
+      return;
+   }
+
+   /*
+    * If we get here, it means that the system supports
+    * conditional rendering since svga->pred.query_id has already been
+    * modified for this context and thus support has already been
+    * verified.
+    */
+   query_id = on ? svga->pred.query_id : SVGA3D_INVALID_ID;
+
+   ret = SVGA3D_vgpu10_SetPredication(svga->swc, query_id,
+                                      (uint32) svga->pred.cond);
+   if (ret == PIPE_ERROR_OUT_OF_MEMORY) {
+      svga_context_flush(svga, NULL);
+      ret = SVGA3D_vgpu10_SetPredication(svga->swc, query_id,
+                                         (uint32) svga->pred.cond);
+      assert(ret == PIPE_OK);
+   }
 }
 
 

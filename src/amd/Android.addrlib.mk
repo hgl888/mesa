@@ -37,8 +37,16 @@ LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/amd/common \
 	$(MESA_TOP)/src/amd/addrlib \
 	$(MESA_TOP)/src/amd/addrlib/core \
+	$(MESA_TOP)/src/amd/addrlib/inc/chip/gfx9 \
 	$(MESA_TOP)/src/amd/addrlib/inc/chip/r800 \
+	$(MESA_TOP)/src/amd/addrlib/gfx9/chip \
 	$(MESA_TOP)/src/amd/addrlib/r800/chip
+
+LOCAL_EXPORT_C_INCLUDE_DIRS := \
+	$(LOCAL_PATH) \
+	$(LOCAL_PATH)/addrlib/core \
+	$(LOCAL_PATH)/addrlib/inc/chip/r800 \
+	$(LOCAL_PATH)/addrlib/r800/chip
 
 include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)

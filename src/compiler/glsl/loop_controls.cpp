@@ -96,10 +96,11 @@ calculate_iterations(ir_rvalue *from, ir_rvalue *to, ir_rvalue *increment,
    ir_expression *const div =
       new(mem_ctx) ir_expression(ir_binop_div, sub->type, sub, increment);
 
-   ir_constant *iter = div->constant_expression_value();
-
-   if (iter == NULL)
+   ir_constant *iter = div->constant_expression_value(mem_ctx);
+   if (iter == NULL) {
+      ralloc_free(mem_ctx);
       return -1;
+   }
 
    if (!iter->type->is_integer()) {
       const ir_expression_operation op = iter->type->is_double()
@@ -107,7 +108,7 @@ calculate_iterations(ir_rvalue *from, ir_rvalue *to, ir_rvalue *increment,
       ir_rvalue *cast =
          new(mem_ctx) ir_expression(op, glsl_type::int_type, iter, NULL);
 
-      iter = cast->constant_expression_value();
+      iter = cast->constant_expression_value(mem_ctx);
    }
 
    int iter_value = iter->get_int_component(0);
@@ -152,7 +153,7 @@ calculate_iterations(ir_rvalue *from, ir_rvalue *to, ir_rvalue *increment,
       ir_expression *const cmp =
 	 new(mem_ctx) ir_expression(op, glsl_type::bool_type, add, to);
 
-      ir_constant *const cmp_result = cmp->constant_expression_value();
+      ir_constant *const cmp_result = cmp->constant_expression_value(mem_ctx);
 
       assert(cmp_result != NULL);
       if (cmp_result->get_bool_component(0)) {

@@ -327,6 +327,8 @@ lp_build_select(struct lp_build_context *bld,
        * supported yet for a long time, and LLVM will generate poor code when
        * the mask is not the result of a comparison.
        * Also, llvm 3.7 may miscompile them (bug 94972).
+       * XXX: Even if the instruction was an SExt, this may still produce
+       * terrible code. Try piglit stencil-twoside.
        */
 
       /* Convert the mask to a vector of booleans.
@@ -348,7 +350,9 @@ lp_build_select(struct lp_build_context *bld,
    else if (((util_cpu_caps.has_sse4_1 &&
               type.width * type.length == 128) ||
              (util_cpu_caps.has_avx &&
-              type.width * type.length == 256 && type.width >= 32)) &&
+              type.width * type.length == 256 && type.width >= 32) ||
+             (util_cpu_caps.has_avx2 &&
+              type.width * type.length == 256)) &&
             !LLVMIsConstant(a) &&
             !LLVMIsConstant(b) &&
             !LLVMIsConstant(mask)) {
@@ -365,9 +369,13 @@ lp_build_select(struct lp_build_context *bld,
            intrinsic = "llvm.x86.avx.blendv.pd.256";
            arg_type = LLVMVectorType(LLVMDoubleTypeInContext(lc), 4);
          }
-         else {
+         else if (type.width == 32) {
             intrinsic = "llvm.x86.avx.blendv.ps.256";
             arg_type = LLVMVectorType(LLVMFloatTypeInContext(lc), 8);
+         } else {
+            assert(util_cpu_caps.has_avx2);
+            intrinsic = "llvm.x86.avx2.pblendvb";
+            arg_type = LLVMVectorType(LLVMInt8TypeInContext(lc), 32);
          }
       }
       else if (type.floating &&

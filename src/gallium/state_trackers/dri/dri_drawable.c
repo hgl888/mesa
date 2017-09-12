@@ -38,6 +38,8 @@
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 
+static uint32_t drifb_ID = 0;
+
 static void
 swap_fences_unref(struct dri_drawable *draw);
 
@@ -121,6 +123,23 @@ dri_st_framebuffer_flush_front(struct st_context_iface *stctx,
 }
 
 /**
+ * The state tracker framebuffer interface flush_swapbuffers callback
+ */
+static boolean
+dri_st_framebuffer_flush_swapbuffers(struct st_context_iface *stctx,
+                                     struct st_framebuffer_iface *stfbi)
+{
+   struct dri_context *ctx = (struct dri_context *)stctx->st_manager_private;
+   struct dri_drawable *drawable =
+      (struct dri_drawable *) stfbi->st_manager_private;
+
+   if (drawable->flush_swapbuffers)
+      drawable->flush_swapbuffers(ctx, drawable);
+
+   return TRUE;
+}
+
+/**
  * This is called when we need to set up GL rendering to a new X window.
  */
 boolean
@@ -144,6 +163,7 @@ dri_create_buffer(__DRIscreen * sPriv,
    drawable->base.visual = &drawable->stvis;
    drawable->base.flush_front = dri_st_framebuffer_flush_front;
    drawable->base.validate = dri_st_framebuffer_validate;
+   drawable->base.flush_swapbuffers = dri_st_framebuffer_flush_swapbuffers;
    drawable->base.st_manager_private = (void *) drawable;
 
    drawable->screen = screen;
@@ -155,6 +175,8 @@ dri_create_buffer(__DRIscreen * sPriv,
 
    dPriv->driverPrivate = (void *)drawable;
    p_atomic_set(&drawable->base.stamp, 1);
+   drawable->base.ID = p_atomic_inc_return(&drifb_ID);
+   drawable->base.state_manager = &screen->base;
 
    return GL_TRUE;
 fail:
@@ -166,6 +188,8 @@ void
 dri_destroy_buffer(__DRIdrawable * dPriv)
 {
    struct dri_drawable *drawable = dri_drawable(dPriv);
+   struct dri_screen *screen = drawable->screen;
+   struct st_api *stapi = screen->st_api;
    int i;
 
    pipe_surface_reference(&drawable->drisw_surface, NULL);
@@ -176,6 +200,9 @@ dri_destroy_buffer(__DRIdrawable * dPriv)
       pipe_resource_reference(&drawable->msaa_textures[i], NULL);
 
    swap_fences_unref(drawable);
+
+   /* Notify the st manager that this drawable is no longer valid */
+   stapi->destroy_drawable(stapi, &drawable->base);
 
    FREE(drawable);
 }
@@ -217,8 +244,12 @@ dri_set_tex_buffer2(__DRIcontext *pDRICtx, GLint target,
                     GLint format, __DRIdrawable *dPriv)
 {
    struct dri_context *ctx = dri_context(pDRICtx);
+   struct st_context_iface *st = ctx->st;
    struct dri_drawable *drawable = dri_drawable(dPriv);
    struct pipe_resource *pt;
+
+   if (st->thread_finish)
+      st->thread_finish(st);
 
    dri_drawable_validate_att(ctx, drawable, ST_ATTACHMENT_FRONT_LEFT);
 
@@ -443,6 +474,7 @@ dri_flush(__DRIcontext *cPriv,
 {
    struct dri_context *ctx = dri_context(cPriv);
    struct dri_drawable *drawable = dri_drawable(dPriv);
+   struct st_context_iface *st;
    unsigned flush_flags;
    boolean swap_msaa_buffers = FALSE;
 
@@ -450,6 +482,10 @@ dri_flush(__DRIcontext *cPriv,
       assert(0);
       return;
    }
+
+   st = ctx->st;
+   if (st->thread_finish)
+      st->thread_finish(st);
 
    if (drawable) {
       /* prevent recursion */
@@ -465,12 +501,12 @@ dri_flush(__DRIcontext *cPriv,
    /* Flush the drawable. */
    if ((flags & __DRI2_FLUSH_DRAWABLE) &&
        drawable->textures[ST_ATTACHMENT_BACK_LEFT]) {
-      struct pipe_context *pipe = ctx->st->pipe;
+      struct pipe_context *pipe = st->pipe;
 
       if (drawable->stvis.samples > 1 &&
           reason == __DRI2_THROTTLE_SWAPBUFFER) {
          /* Resolve the MSAA back buffer. */
-         dri_pipe_blit(ctx->st->pipe,
+         dri_pipe_blit(st->pipe,
                        drawable->textures[ST_ATTACHMENT_BACK_LEFT],
                        drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT]);
 
@@ -529,7 +565,7 @@ dri_flush(__DRIcontext *cPriv,
          screen->fence_reference(screen, &fence, NULL);
       }
 
-      ctx->st->flush(ctx->st, flush_flags, &fence);
+      st->flush(st, flush_flags, &fence);
 
       if (fence) {
          swap_fences_push_back(drawable, fence);
@@ -537,7 +573,7 @@ dri_flush(__DRIcontext *cPriv,
       }
    }
    else if (flags & (__DRI2_FLUSH_DRAWABLE | __DRI2_FLUSH_CONTEXT)) {
-      ctx->st->flush(ctx->st, flush_flags, NULL);
+      st->flush(st, flush_flags, NULL);
    }
 
    if (drawable) {

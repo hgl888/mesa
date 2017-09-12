@@ -59,6 +59,18 @@ struct svga_buffer_range
 struct svga_3d_update_gb_image;
 
 /**
+ * This structure describes the bind flags and cache key associated
+ * with the host surface.
+ */
+struct svga_buffer_surface
+{
+   struct list_head list;
+   unsigned bind_flags;
+   struct svga_host_surface_cache_key key;
+   struct svga_winsys_surface *handle;
+};
+
+/**
  * SVGA pipe buffer.
  */
 struct svga_buffer 
@@ -99,6 +111,12 @@ struct svga_buffer
     * Only set for non-user buffers.
     */
    struct svga_winsys_surface *handle;
+
+   /**
+    * List of surfaces created for this buffer resource to support
+    * incompatible bind flags.
+    */
+   struct list_head surfaces;
 
    /**
     * Information about ongoing and past map operations.
@@ -192,6 +210,17 @@ struct svga_buffer
    unsigned size;  /**< Approximate size in bytes */
 
    boolean dirty;  /**< Need to do a readback before mapping? */
+
+   /** In some cases we try to keep the results of the translate_indices()
+    * function from svga_draw_elements.c
+    */
+   struct {
+      enum pipe_prim_type orig_prim, new_prim;
+      struct pipe_resource *buffer;
+      unsigned index_size;
+      unsigned offset;  /**< first index */
+      unsigned count;   /**< num indices */
+   } translated_indices;
 };
 
 
@@ -244,6 +273,7 @@ svga_buffer_has_hw_storage(struct svga_buffer *sbuf)
 
 /**
  * Map the hardware storage of a buffer.
+ * \param flags  bitmask of PIPE_TRANSFER_* flags
  */
 static inline void *
 svga_buffer_hw_storage_map(struct svga_context *svga,
@@ -252,7 +282,7 @@ svga_buffer_hw_storage_map(struct svga_context *svga,
 {
    struct svga_winsys_screen *sws = svga_buffer_winsys_screen(sbuf);
 
-   svga->hud.num_resources_mapped++;
+   svga->hud.num_buffers_mapped++;
 
    if (sws->have_gb_objects) {
       return svga->swc->surface_map(svga->swc, sbuf->handle, flags, retry);
@@ -313,7 +343,8 @@ svga_buffer_create(struct pipe_screen *screen,
  */
 struct svga_winsys_surface *
 svga_buffer_handle(struct svga_context *svga,
-                   struct pipe_resource *buf);
+                   struct pipe_resource *buf,
+                   unsigned tobind_flags);
 
 void
 svga_context_flush_buffers(struct svga_context *svga);

@@ -29,6 +29,7 @@
 #include "main/mtypes.h"
 #include "main/formats.h"
 #include "brw_context.h"
+#include "intel_mipmap_tree.h"
 
 void intelInitTextureFuncs(struct dd_function_table *functions);
 
@@ -49,7 +50,7 @@ struct intel_mipmap_tree *
 intel_miptree_create_for_teximage(struct brw_context *brw,
 				  struct intel_texture_object *intelObj,
 				  struct intel_texture_image *intelImage,
-                                  uint32_t layout_flags);
+                                  enum intel_miptree_create_flags flags);
 
 void intel_finalize_mipmap_tree(struct brw_context *brw, GLuint unit);
 

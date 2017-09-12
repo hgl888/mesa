@@ -32,6 +32,9 @@ MESA_GLAPI_OUTPUTS = \
 if HAVE_APPLEDRI
 MESA_GLAPI_OUTPUTS += $(MESA_GLAPI_DIR)/glapi_gentable.c
 endif
+if HAVE_WINDOWSDRI
+MESA_GLAPI_OUTPUTS += $(MESA_GLAPI_DIR)/glapi_gentable.c
+endif
 
 MESA_GLAPI_ASM_OUTPUTS =
 if HAVE_X86_ASM
@@ -51,6 +54,8 @@ BUILT_SOURCES = \
 	$(MESA_GLAPI_ASM_OUTPUTS) \
 	$(MESA_DIR)/main/enums.c \
 	$(MESA_DIR)/main/api_exec.c \
+	$(MESA_DIR)/main/marshal_generated.c \
+	$(MESA_DIR)/main/marshal_generated.h \
 	$(MESA_DIR)/main/dispatch.h \
 	$(MESA_DIR)/main/remap_helper.h \
 	$(MESA_GLX_DIR)/indirect.c \
@@ -70,6 +75,8 @@ EXTRA_DIST= \
 	gl_enums.py \
 	gl_genexec.py \
 	gl_gentable.py \
+	gl_marshal.py \
+	gl_marshal_h.py \
 	gl_procs.py \
 	gl_SPARC_asm.py \
 	gl_table.py \
@@ -79,6 +86,7 @@ EXTRA_DIST= \
 	glX_proto_send.py \
 	glX_proto_size.py \
 	glX_server_table.py \
+	marshal_XML.py \
 	remap_helper.py \
 	static_data.py \
 	SConscript \
@@ -111,12 +119,14 @@ API_XML = \
 	gl_and_glX_API.xml \
 	ARB_base_instance.xml \
 	ARB_blend_func_extended.xml \
+	ARB_bindless_texture.xml \
 	ARB_clear_buffer_object.xml \
 	ARB_clear_texture.xml \
 	ARB_clip_control.xml \
 	ARB_color_buffer_float.xml \
 	ARB_compressed_texture_pixel_storage.xml \
 	ARB_compute_shader.xml \
+	ARB_compute_variable_group_size.xml \
 	ARB_copy_buffer.xml \
 	ARB_copy_image.xml \
 	ARB_debug_output.xml \
@@ -135,6 +145,7 @@ API_XML = \
 	ARB_get_program_binary.xml \
 	ARB_get_texture_sub_image.xml \
 	ARB_gpu_shader_fp64.xml \
+	ARB_gpu_shader_int64.xml \
 	ARB_gpu_shader5.xml \
 	ARB_indirect_parameters.xml \
 	ARB_instanced_arrays.xml \
@@ -154,6 +165,7 @@ API_XML = \
 	ARB_shader_image_load_store.xml \
 	ARB_shader_subroutine.xml \
 	ARB_shader_storage_buffer_object.xml \
+	ARB_sparse_buffer.xml \
 	ARB_sync.xml \
 	ARB_tessellation_shader.xml \
 	ARB_texture_barrier.xml \
@@ -180,6 +192,8 @@ API_XML = \
 	APPLE_object_purgeable.xml \
 	APPLE_vertex_array_object.xml \
 	EXT_draw_buffers2.xml \
+	EXT_external_objects.xml \
+	EXT_external_objects_fd.xml \
 	EXT_framebuffer_object.xml \
 	EXT_gpu_shader4.xml \
 	EXT_packed_depth_stencil.xml \
@@ -249,7 +263,7 @@ $(XORG_GLAPI_DIR)/%.h: $(MESA_GLAPI_DIR)/%.h
 
 $(MESA_GLAPI_DIR)/glapi_mapi_tmp.h: $(MESA_MAPI_DIR)/mapi_abi.py $(COMMON)
 	$(PYTHON_GEN) $(MESA_MAPI_DIR)/mapi_abi.py \
-		--printer glapi --mode lib $(srcdir)/gl_and_es_API.xml > $@
+		--printer glapi $(srcdir)/gl_and_es_API.xml > $@
 
 $(MESA_GLAPI_DIR)/glprocs.h: gl_procs.py $(COMMON)
 	$(PYTHON_GEN) $(srcdir)/gl_procs.py -c -f $(srcdir)/gl_and_es_API.xml > $@
@@ -281,6 +295,12 @@ $(MESA_DIR)/main/enums.c: gl_enums.py $(srcdir)/../registry/gl.xml
 
 $(MESA_DIR)/main/api_exec.c: gl_genexec.py apiexec.py $(COMMON)
 	$(PYTHON_GEN) $(srcdir)/gl_genexec.py -f $(srcdir)/gl_and_es_API.xml > $@
+
+$(MESA_DIR)/main/marshal_generated.c: gl_marshal.py marshal_XML.py $(COMMON)
+	$(PYTHON_GEN) $(srcdir)/gl_marshal.py -f $(srcdir)/gl_and_es_API.xml > $@
+
+$(MESA_DIR)/main/marshal_generated.h: gl_marshal_h.py marshal_XML.py $(COMMON)
+	$(PYTHON_GEN) $(srcdir)/gl_marshal_h.py -f $(srcdir)/gl_and_es_API.xml > $@
 
 $(MESA_DIR)/main/dispatch.h: gl_table.py $(COMMON)
 	$(PYTHON_GEN) $(srcdir)/gl_table.py -f $(srcdir)/gl_and_es_API.xml -m remap_table > $@

@@ -21,12 +21,13 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef BLORP_PRIV_H
+#define BLORP_PRIV_H
 
 #include <stdint.h>
 
 #include "compiler/nir/nir.h"
-#include "brw_compiler.h"
+#include "compiler/brw_compiler.h"
 
 #include "blorp.h"
 
@@ -43,15 +44,10 @@ enum {
    BLORP_NUM_BT_ENTRIES
 };
 
-enum blorp_fast_clear_op {
-   BLORP_FAST_CLEAR_OP_NONE = 0,
-   BLORP_FAST_CLEAR_OP_CLEAR,
-   BLORP_FAST_CLEAR_OP_RESOLVE_PARTIAL,
-   BLORP_FAST_CLEAR_OP_RESOLVE_FULL,
-};
-
 struct brw_blorp_surface_info
 {
+   bool enabled;
+
    struct isl_surf surf;
    struct blorp_address addr;
 
@@ -75,6 +71,9 @@ brw_blorp_surface_info_init(struct blorp_context *blorp,
                             const struct blorp_surf *surf,
                             unsigned int level, unsigned int layer,
                             enum isl_format format, bool is_render_target);
+void
+blorp_surf_convert_to_single_slice(const struct isl_device *isl_dev,
+                                   struct brw_blorp_surface_info *info);
 
 
 struct brw_blorp_coord_transform
@@ -119,12 +118,17 @@ struct blorp_surf_offset {
 
 struct brw_blorp_wm_inputs
 {
+   uint32_t clear_color[4];
+
    struct brw_blorp_discard_rect discard_rect;
    struct brw_blorp_rect_grid rect_grid;
    struct brw_blorp_coord_transform coord_transform[2];
 
    struct blorp_surf_offset src_offset;
    struct blorp_surf_offset dst_offset;
+
+   /* (1/width, 1/height) for the source surface */
+   float src_inv_size[2];
 
    /* Minimum layer setting works for all the textures types but texture_3d
     * for which the setting has no effect. Use the z-coordinate instead.
@@ -135,33 +139,26 @@ struct brw_blorp_wm_inputs
    uint32_t pad[1];
 };
 
-struct brw_blorp_prog_data
-{
-   bool dispatch_8;
-   bool dispatch_16;
+#define BLORP_CREATE_NIR_INPUT(shader, name, type) ({ \
+   nir_variable *input = nir_variable_create((shader), nir_var_shader_in, \
+                                             type, #name); \
+   if ((shader)->stage == MESA_SHADER_FRAGMENT) \
+      input->data.interpolation = INTERP_MODE_FLAT; \
+   input->data.location = VARYING_SLOT_VAR0 + \
+      offsetof(struct brw_blorp_wm_inputs, name) / (4 * sizeof(float)); \
+   input->data.location_frac = \
+      (offsetof(struct brw_blorp_wm_inputs, name) / sizeof(float)) % 4; \
+   input; \
+})
 
-   uint8_t first_curbe_grf_0;
-   uint8_t first_curbe_grf_2;
-
-   uint32_t ksp_offset_2;
-
-   /**
-    * True if the WM program should be run in MSDISPMODE_PERSAMPLE with more
-    * than one sample per pixel.
-    */
-   bool persample_msaa_dispatch;
-
-   /**
-    * Mask of which FS inputs are marked flat by the shader source.  This is
-    * needed for setting up 3DSTATE_SF/SBE.
-    */
-   uint32_t flat_inputs;
-   unsigned num_varying_inputs;
-   uint64_t inputs_read;
+struct blorp_vs_inputs {
+   uint32_t base_layer;
+   uint32_t _instance_id; /* Set in hardware by SGVS */
+   uint32_t pad[2];
 };
 
 static inline unsigned
-brw_blorp_get_urb_length(const struct brw_blorp_prog_data *prog_data)
+brw_blorp_get_urb_length(const struct brw_wm_prog_data *prog_data)
 {
    if (prog_data == NULL)
       return 1;
@@ -179,24 +176,48 @@ struct blorp_params
    uint32_t y0;
    uint32_t x1;
    uint32_t y1;
+   float z;
+   uint8_t stencil_mask;
+   uint8_t stencil_ref;
    struct brw_blorp_surface_info depth;
+   struct brw_blorp_surface_info stencil;
    uint32_t depth_format;
    struct brw_blorp_surface_info src;
    struct brw_blorp_surface_info dst;
    enum blorp_hiz_op hiz_op;
+   bool full_surface_hiz_op;
    enum blorp_fast_clear_op fast_clear_op;
    bool color_write_disable[4];
    struct brw_blorp_wm_inputs wm_inputs;
+   struct blorp_vs_inputs vs_inputs;
+   unsigned num_samples;
    unsigned num_draw_buffers;
    unsigned num_layers;
+   uint32_t vs_prog_kernel;
+   struct brw_vs_prog_data *vs_prog_data;
+   uint32_t sf_prog_kernel;
+   struct brw_sf_prog_data *sf_prog_data;
    uint32_t wm_prog_kernel;
-   struct brw_blorp_prog_data *wm_prog_data;
+   struct brw_wm_prog_data *wm_prog_data;
+
+   bool use_pre_baked_binding_table;
+   uint32_t pre_baked_binding_table_offset;
 };
 
 void blorp_params_init(struct blorp_params *params);
 
+enum blorp_shader_type {
+   BLORP_SHADER_TYPE_BLIT,
+   BLORP_SHADER_TYPE_CLEAR,
+   BLORP_SHADER_TYPE_MCS_PARTIAL_RESOLVE,
+   BLORP_SHADER_TYPE_LAYER_OFFSET_VS,
+   BLORP_SHADER_TYPE_GEN4_SF,
+};
+
 struct brw_blorp_blit_prog_key
 {
+   enum blorp_shader_type shader_type; /* Must be BLORP_SHADER_TYPE_BLIT */
+
    /* Number of samples per pixel that have been configured in the surface
     * state for texturing from.
     */
@@ -215,6 +236,12 @@ struct brw_blorp_blit_prog_key
    /* Actual MSAA layout used by the source image. */
    enum isl_msaa_layout src_layout;
 
+   /* Number of bits per channel in the source image. */
+   uint8_t src_bpc;
+
+   /* True if the source requires normalized coordinates */
+   bool src_coords_normalized;
+
    /* Number of samples per pixel that have been configured in the render
     * target.
     */
@@ -228,6 +255,9 @@ struct brw_blorp_blit_prog_key
 
    /* Actual MSAA layout used by the destination image. */
    enum isl_msaa_layout dst_layout;
+
+   /* Number of bits per channel in the destination image. */
+   uint8_t dst_bpc;
 
    /* Type of the data to be read from the texture (one of
     * nir_type_(int|uint|float)).
@@ -303,14 +333,27 @@ struct brw_blorp_blit_prog_key
 void brw_blorp_init_wm_prog_key(struct brw_wm_prog_key *wm_key);
 
 const unsigned *
-brw_blorp_compile_nir_shader(struct blorp_context *blorp, struct nir_shader *nir,
-                             const struct brw_wm_prog_key *wm_key,
-                             bool use_repclear,
-                             struct brw_blorp_prog_data *prog_data,
-                             unsigned *program_size);
+blorp_compile_fs(struct blorp_context *blorp, void *mem_ctx,
+                 struct nir_shader *nir,
+                 struct brw_wm_prog_key *wm_key,
+                 bool use_repclear,
+                 struct brw_wm_prog_data *wm_prog_data,
+                 unsigned *program_size);
+
+const unsigned *
+blorp_compile_vs(struct blorp_context *blorp, void *mem_ctx,
+                 struct nir_shader *nir,
+                 struct brw_vs_prog_data *vs_prog_data,
+                 unsigned *program_size);
+
+bool
+blorp_ensure_sf_program(struct blorp_context *blorp,
+                        struct blorp_params *params);
 
 /** \} */
 
 #ifdef __cplusplus
 } /* end extern "C" */
 #endif /* __cplusplus */
+
+#endif /* BLORP_PRIV_H */

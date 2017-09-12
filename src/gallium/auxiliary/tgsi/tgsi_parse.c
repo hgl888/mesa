@@ -155,12 +155,14 @@ tgsi_parse_token(
          break;
 
       case TGSI_IMM_UINT32:
+      case TGSI_IMM_UINT64:
          for (i = 0; i < imm_count; i++) {
             next_token(ctx, &imm->u[i].Uint);
          }
          break;
 
       case TGSI_IMM_INT32:
+      case TGSI_IMM_INT64:
          for (i = 0; i < imm_count; i++) {
             next_token(ctx, &imm->u[i].Int);
          }
@@ -179,10 +181,6 @@ tgsi_parse_token(
 
       memset(inst, 0, sizeof *inst);
       copy_token(&inst->Instruction, &token);
-
-      if (inst->Instruction.Predicate) {
-         next_token(ctx, &inst->Predicate);
-      }
 
       if (inst->Instruction.Label) {
          next_token( ctx, &inst->Label);

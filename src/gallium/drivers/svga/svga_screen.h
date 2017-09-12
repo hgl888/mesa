@@ -62,12 +62,13 @@ struct svga_screen
       boolean no_surface_view;
       boolean force_sampler_view;
       boolean no_sampler_view;
+      boolean no_cache_index_buffers;
    } debug;
 
    unsigned texture_timestamp;
-   pipe_mutex tex_mutex; 
+   mtx_t tex_mutex;
 
-   pipe_mutex swc_mutex; /* Used for buffer uploads */
+   mtx_t swc_mutex; /* Used for buffer uploads */
 
    /* which formats to translate depth formats into */
    struct {
@@ -85,6 +86,7 @@ struct svga_screen
       /** Memory used by all resources (buffers and surfaces) */
       uint64_t total_resource_bytes;
       uint64_t num_resources;
+      uint64_t num_failed_allocations;
    } hud;
 };
 

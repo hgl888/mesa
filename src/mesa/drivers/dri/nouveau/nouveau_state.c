@@ -32,6 +32,7 @@
 #include "swrast/swrast.h"
 #include "tnl/tnl.h"
 #include "util/bitscan.h"
+#include "main/framebuffer.h"
 
 static void
 nouveau_alpha_func(struct gl_context *ctx, GLenum func, GLfloat ref)
@@ -395,8 +396,7 @@ nouveau_tex_env(struct gl_context *ctx, GLenum target, GLenum pname,
 
 static void
 nouveau_tex_parameter(struct gl_context *ctx,
-		      struct gl_texture_object *t, GLenum pname,
-		      const GLfloat *params)
+		      struct gl_texture_object *t, GLenum pname)
 {
 	switch (pname) {
 	case GL_TEXTURE_MAG_FILTER:
@@ -452,9 +452,13 @@ nouveau_state_emit(struct gl_context *ctx)
 }
 
 static void
-nouveau_update_state(struct gl_context *ctx, GLbitfield new_state)
+nouveau_update_state(struct gl_context *ctx)
 {
+	GLbitfield new_state = ctx->NewState;
 	int i;
+
+	if (new_state & (_NEW_SCISSOR | _NEW_BUFFERS | _NEW_VIEWPORT))
+		_mesa_update_draw_buffer_bounds(ctx, ctx->DrawBuffer);
 
 	if (new_state & (_NEW_PROJECTION | _NEW_MODELVIEW))
 		context_dirty(ctx, PROJECTION);
@@ -494,7 +498,6 @@ nouveau_update_state(struct gl_context *ctx, GLbitfield new_state)
 
 	_swrast_InvalidateState(ctx, new_state);
 	_tnl_InvalidateState(ctx, new_state);
-	_vbo_InvalidateState(ctx, new_state);
 
 	nouveau_state_emit(ctx);
 }

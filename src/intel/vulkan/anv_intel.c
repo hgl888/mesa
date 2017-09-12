@@ -44,21 +44,20 @@ VkResult anv_CreateDmaBufImageINTEL(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_DMA_BUF_IMAGE_CREATE_INFO_INTEL);
 
-   mem = anv_alloc2(&device->alloc, pAllocator, sizeof(*mem), 8,
+   mem = vk_alloc2(&device->alloc, pAllocator, sizeof(*mem), 8,
                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (mem == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   mem->bo.gem_handle = anv_gem_fd_to_handle(device, pCreateInfo->fd);
-   if (!mem->bo.gem_handle) {
-      result = vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
-      goto fail;
-   }
+   uint64_t size = (uint64_t)pCreateInfo->strideInBytes * pCreateInfo->extent.height;
 
-   mem->bo.map = NULL;
-   mem->bo.index = 0;
-   mem->bo.offset = 0;
-   mem->bo.size = pCreateInfo->strideInBytes * pCreateInfo->extent.height;
+   result = anv_bo_cache_import(device, &device->bo_cache,
+                                pCreateInfo->fd, size, &mem->bo);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   if (device->instance->physicalDevice.supports_48bit_addresses)
+      mem->bo->flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
 
    anv_image_create(_device,
       &(struct anv_image_create_info) {
@@ -81,7 +80,7 @@ VkResult anv_CreateDmaBufImageINTEL(
       pAllocator, &image_h);
 
    image = anv_image_from_handle(image_h);
-   image->bo = &mem->bo;
+   image->bo = mem->bo;
    image->offset = 0;
 
    assert(image->extent.width > 0);
@@ -94,7 +93,7 @@ VkResult anv_CreateDmaBufImageINTEL(
    return VK_SUCCESS;
 
  fail:
-   anv_free2(&device->alloc, pAllocator, mem);
+   vk_free2(&device->alloc, pAllocator, mem);
 
    return result;
 }

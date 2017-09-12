@@ -6,16 +6,19 @@
 #define __glxlibglvnd_dispatchindex_h__
 
 typedef enum __GLXdispatchIndex {
+    DI_BindSwapBarrierSGIX,
     DI_BindTexImageEXT,
     // ChooseFBConfig implemented by libglvnd
     DI_ChooseFBConfigSGIX,
     // ChooseVisual implemented by libglvnd
     // CopyContext implemented by libglvnd
+    DI_CopySubBufferMESA,
     // CreateContext implemented by libglvnd
     DI_CreateContextAttribsARB,
     DI_CreateContextWithConfigSGIX,
     DI_CreateGLXPbufferSGIX,
     // CreateGLXPixmap implemented by libglvnd
+    DI_CreateGLXPixmapMESA,
     DI_CreateGLXPixmapWithConfigSGIX,
     // CreateNewContext implemented by libglvnd
     // CreatePbuffer implemented by libglvnd
@@ -36,56 +39,54 @@ typedef enum __GLXdispatchIndex {
     DI_GetCurrentDisplayEXT,
     // GetCurrentDrawable implemented by libglvnd
     // GetCurrentReadDrawable implemented by libglvnd
+    DI_GetDriverConfig,
     // GetFBConfigAttrib implemented by libglvnd
     DI_GetFBConfigAttribSGIX,
     DI_GetFBConfigFromVisualSGIX,
     // GetFBConfigs implemented by libglvnd
+    DI_GetMscRateOML,
     // GetProcAddress implemented by libglvnd
     // GetProcAddressARB implemented by libglvnd
+    DI_GetScreenDriver,
     // GetSelectedEvent implemented by libglvnd
     DI_GetSelectedEventSGIX,
+    DI_GetSwapIntervalMESA,
+    DI_GetSyncValuesOML,
     DI_GetVideoSyncSGI,
     // GetVisualFromFBConfig implemented by libglvnd
     DI_GetVisualFromFBConfigSGIX,
     // ImportContextEXT implemented by libglvnd
     // IsDirect implemented by libglvnd
+    DI_JoinSwapGroupSGIX,
     // MakeContextCurrent implemented by libglvnd
     // MakeCurrent implemented by libglvnd
     // QueryContext implemented by libglvnd
     DI_QueryContextInfoEXT,
+    DI_QueryCurrentRendererIntegerMESA,
+    DI_QueryCurrentRendererStringMESA,
     // QueryDrawable implemented by libglvnd
     // QueryExtension implemented by libglvnd
     // QueryExtensionsString implemented by libglvnd
     DI_QueryGLXPbufferSGIX,
+    DI_QueryMaxSwapBarriersSGIX,
+    DI_QueryRendererIntegerMESA,
+    DI_QueryRendererStringMESA,
     // QueryServerString implemented by libglvnd
     // QueryVersion implemented by libglvnd
+    DI_ReleaseBuffersMESA,
     DI_ReleaseTexImageEXT,
     // SelectEvent implemented by libglvnd
     DI_SelectEventSGIX,
     // SwapBuffers implemented by libglvnd
+    DI_SwapBuffersMscOML,
+    DI_SwapIntervalMESA,
     DI_SwapIntervalSGI,
     // UseXFont implemented by libglvnd
+    DI_WaitForMscOML,
+    DI_WaitForSbcOML,
     // WaitGL implemented by libglvnd
     DI_WaitVideoSyncSGI,
     // WaitX implemented by libglvnd
-    DI_glXBindSwapBarrierSGIX,
-    DI_glXCopySubBufferMESA,
-    DI_glXCreateGLXPixmapMESA,
-    DI_glXGetMscRateOML,
-    DI_glXGetScreenDriver,
-    DI_glXGetSwapIntervalMESA,
-    DI_glXGetSyncValuesOML,
-    DI_glXJoinSwapGroupSGIX,
-    DI_glXQueryCurrentRendererIntegerMESA,
-    DI_glXQueryCurrentRendererStringMESA,
-    DI_glXQueryMaxSwapBarriersSGIX,
-    DI_glXQueryRendererIntegerMESA,
-    DI_glXQueryRendererStringMESA,
-    DI_glXReleaseBuffersMESA,
-    DI_glXSwapBuffersMscOML,
-    DI_glXSwapIntervalMESA,
-    DI_glXWaitForMscOML,
-    DI_glXWaitForSbcOML,
     DI_LAST_INDEX
 } __GLXdispatchIndex;
 

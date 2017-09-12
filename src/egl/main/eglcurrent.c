@@ -26,8 +26,10 @@
  **************************************************************************/
 
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include "c99_compat.h"
 #include "c11/threads.h"
 
@@ -35,13 +37,8 @@
 #include "eglcurrent.h"
 #include "eglglobals.h"
 
-
-/* This should be kept in sync with _eglInitThreadInfo() */
-#define _EGL_THREAD_INFO_INITIALIZER \
-   { EGL_SUCCESS, NULL, 0 }
-
 /* a fallback thread info to guarantee that every thread always has one */
-static _EGLThreadInfo dummy_thread = _EGL_THREAD_INFO_INITIALIZER;
+static _EGLThreadInfo dummy_thread;
 static mtx_t _egl_TSDMutex = _MTX_INITIALIZER_NP;
 static EGLBoolean _egl_TSDInitialized;
 static tss_t _egl_TSD;
@@ -108,7 +105,6 @@ static inline EGLBoolean _eglInitTSD(void (*dtor)(_EGLThreadInfo *))
 static void
 _eglInitThreadInfo(_EGLThreadInfo *t)
 {
-   memset(t, 0, sizeof(*t));
    t->LastError = EGL_SUCCESS;
    /* default, per EGL spec */
    t->CurrentAPI = EGL_OPENGL_ES_API;
@@ -122,10 +118,10 @@ static _EGLThreadInfo *
 _eglCreateThreadInfo(void)
 {
    _EGLThreadInfo *t = calloc(1, sizeof(_EGLThreadInfo));
-   if (t)
-      _eglInitThreadInfo(t);
-   else
+   if (!t)
       t = &dummy_thread;
+
+   _eglInitThreadInfo(t);
    return t;
 }
 
@@ -218,8 +214,8 @@ _eglGetCurrentContext(void)
 /**
  * Record EGL error code and return EGL_FALSE.
  */
-EGLBoolean
-_eglError(EGLint errCode, const char *msg)
+static EGLBoolean
+_eglInternalError(EGLint errCode, const char *msg)
 {
    _EGLThreadInfo *t = _eglGetCurrentThread();
 
@@ -278,4 +274,87 @@ _eglError(EGLint errCode, const char *msg)
    }
 
    return EGL_FALSE;
+}
+
+EGLBoolean
+_eglError(EGLint errCode, const char *msg)
+{
+   if (errCode != EGL_SUCCESS) {
+      EGLint type;
+      if (errCode == EGL_BAD_ALLOC) {
+         type = EGL_DEBUG_MSG_CRITICAL_KHR;
+      } else {
+         type = EGL_DEBUG_MSG_ERROR_KHR;
+      }
+
+      _eglDebugReport(errCode, msg, type, NULL);
+   } else
+      _eglInternalError(errCode, msg);
+
+   return EGL_FALSE;
+}
+
+/**
+ * Returns the label set for the current thread.
+ */
+EGLLabelKHR
+_eglGetThreadLabel(void)
+{
+   _EGLThreadInfo *t = _eglGetCurrentThread();
+   return t->Label;
+}
+
+static void
+_eglDebugReportFullv(EGLenum error, const char *command, const char *funcName,
+      EGLint type, EGLLabelKHR objectLabel, const char *message, va_list args)
+{
+   EGLDEBUGPROCKHR callback = NULL;
+
+   mtx_lock(_eglGlobal.Mutex);
+   if (_eglGlobal.debugTypesEnabled & DebugBitFromType(type)) {
+      callback = _eglGlobal.debugCallback;
+   }
+   mtx_unlock(_eglGlobal.Mutex);
+
+   if (callback != NULL) {
+      char *buf = NULL;
+
+      if (message != NULL) {
+         if (vasprintf(&buf, message, args) < 0) {
+            buf = NULL;
+         }
+      }
+      callback(error, command, type, _eglGetThreadLabel(), objectLabel, buf);
+      free(buf);
+   }
+
+   if (type == EGL_DEBUG_MSG_CRITICAL_KHR || type == EGL_DEBUG_MSG_ERROR_KHR) {
+      _eglInternalError(error, funcName);
+   }
+}
+
+void
+_eglDebugReportFull(EGLenum error, const char *command, const char *funcName,
+      EGLint type, EGLLabelKHR objectLabel, const char *message, ...)
+{
+   va_list args;
+   va_start(args, message);
+   _eglDebugReportFullv(error, command, funcName, type, objectLabel, message, args);
+   va_end(args);
+}
+
+void
+_eglDebugReport(EGLenum error, const char *funcName,
+      EGLint type, const char *message, ...)
+{
+   _EGLThreadInfo *thr = _eglGetCurrentThread();
+   va_list args;
+
+   if (funcName == NULL) {
+      funcName = thr->CurrentFuncName;
+   }
+
+   va_start(args, message);
+   _eglDebugReportFullv(error, thr->CurrentFuncName, funcName, type, thr->CurrentObjectLabel, message, args);
+   va_end(args);
 }

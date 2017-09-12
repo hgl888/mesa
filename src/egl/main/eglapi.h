@@ -110,6 +110,8 @@ struct _egl_api
                              _EGLSurface *draw);
    EGLBoolean (*CopyBuffers)(_EGLDriver *drv, _EGLDisplay *dpy,
                              _EGLSurface *surface, void *native_pixmap_target);
+   EGLBoolean (*SetDamageRegion)(_EGLDriver *drv, _EGLDisplay *dpy,
+                                 _EGLSurface *surface, EGLint *rects, EGLint n_rects);
 
    /* misc functions */
    EGLBoolean (*WaitClient)(_EGLDriver *drv, _EGLDisplay *dpy,
@@ -135,8 +137,7 @@ struct _egl_api
                                  _EGLImage *image);
 
    _EGLSync *(*CreateSyncKHR)(_EGLDriver *drv, _EGLDisplay *dpy, EGLenum type,
-                              const EGLint *attrib_list,
-                              const EGLAttrib *attrib_list64);
+                              const EGLAttrib *attrib_list);
    EGLBoolean (*DestroySyncKHR)(_EGLDriver *drv, _EGLDisplay *dpy,
                                 _EGLSync *sync);
    EGLint (*ClientWaitSyncKHR)(_EGLDriver *drv, _EGLDisplay *dpy,
@@ -147,6 +148,8 @@ struct _egl_api
    EGLBoolean (*GetSyncAttrib)(_EGLDriver *drv, _EGLDisplay *dpy,
                                _EGLSync *sync, EGLint attribute,
                                EGLAttrib *value);
+   EGLint (*DupNativeFenceFDANDROID)(_EGLDriver *drv, _EGLDisplay *dpy,
+                                     _EGLSync *sync);
 
    EGLBoolean (*SwapBuffersRegionNOK)(_EGLDriver *drv, _EGLDisplay *disp,
                                       _EGLSurface *surf, EGLint numRects,
@@ -197,8 +200,16 @@ struct _egl_api
    int (*GLInteropExportObject)(_EGLDisplay *dpy, _EGLContext *ctx,
                                 struct mesa_glinterop_export_in *in,
                                 struct mesa_glinterop_export_out *out);
-};
 
+   EGLBoolean (*QueryDmaBufFormatsEXT)(_EGLDriver *drv, _EGLDisplay *dpy,
+                                       EGLint max_formats, EGLint *formats,
+                                       EGLint *num_formats);
+   EGLBoolean (*QueryDmaBufModifiersEXT) (_EGLDriver *drv, _EGLDisplay *dpy,
+                                          EGLint format, EGLint max_modifiers,
+                                          EGLuint64KHR *modifiers,
+                                          EGLBoolean *external_only,
+                                          EGLint *num_modifiers);
+};
 
 #ifdef __cplusplus
 }

@@ -63,7 +63,7 @@ svga_translate_vertex_format_vgpu10(enum pipe_format format,
                                     unsigned *vf_flags);
 
 enum SVGA3dSurfaceFormat
-svga_translate_format(struct svga_screen *ss,
+svga_translate_format(const struct svga_screen *ss,
                       enum pipe_format format,
                       unsigned bind);
 
@@ -108,4 +108,16 @@ bool
 svga_format_is_uncompressed_snorm(SVGA3dSurfaceFormat format);
 
 
+bool
+svga_format_is_typeless(SVGA3dSurfaceFormat format);
+
+bool
+svga_format_is_shareable(const struct svga_screen *ss,
+                         enum pipe_format pformat,
+                         SVGA3dSurfaceFormat sformat,
+                         unsigned bind,
+                         bool verbose);
+
+SVGA3dSurfaceFormat
+svga_linear_to_srgb(SVGA3dSurfaceFormat format);
 #endif /* SVGA_FORMAT_H_ */

@@ -33,7 +33,7 @@
 #include "entrypoint.h"
 #include "vid_dec.h"
 
-#define DPB_MAX_SIZE 16
+#define DPB_MAX_SIZE 32
 #define MAX_NUM_REF_PICS 16
 
 enum {
@@ -57,9 +57,32 @@ enum {
    NAL_UNIT_TYPE_PPS = 34,
 };
 
+static const uint8_t Default_8x8_Intra[64] = {
+   16, 16, 16, 16, 17, 18, 21, 24,
+   16, 16, 16, 16, 17, 19, 22, 25,
+   16, 16, 17, 18, 20, 22, 25, 29,
+   16, 16, 18, 21, 24, 27, 31, 36,
+   17, 17, 20, 24, 30, 35, 41, 47,
+   18, 19, 22, 27, 35, 44, 54, 65,
+   21, 22, 25, 31, 41, 54, 70, 88,
+   24, 25, 29, 36, 47, 65, 88, 115
+};
+
+static const uint8_t Default_8x8_Inter[64] = {
+   16, 16, 16, 16, 17, 18, 20, 24,
+   16, 16, 16, 17, 18, 20, 24, 25,
+   16, 16, 17, 18, 20, 24, 25, 28,
+   16, 17, 18, 20, 24, 25, 28, 33,
+   17, 18, 20, 24, 25, 28, 33, 41,
+   18, 20, 24, 25, 28, 33, 41, 54,
+   20, 24, 25, 28, 33, 41, 54, 71,
+   24, 25, 28, 33, 41, 54, 71, 91
+};
+
 struct dpb_list {
    struct list_head list;
    struct pipe_video_buffer *buffer;
+   OMX_TICKS timestamp;
    unsigned poc;
 };
 
@@ -187,10 +210,80 @@ static unsigned profile_tier_level(struct vl_rbsp *rbsp,
    return level_idc;
 }
 
-static void scaling_list_data(void)
+static void scaling_list_data(vid_dec_PrivateType *priv,
+                              struct vl_rbsp *rbsp, struct pipe_h265_sps *sps)
 {
-   /* TODO */
-   assert(0);
+   unsigned size_id, matrix_id;
+   unsigned scaling_list_len[4] = { 16, 64, 64, 64 };
+   uint8_t scaling_list4x4[6][64] = {  };
+   int i;
+
+   uint8_t (*scaling_list_data[4])[6][64] = {
+        (uint8_t (*)[6][64])scaling_list4x4,
+        (uint8_t (*)[6][64])sps->ScalingList8x8,
+        (uint8_t (*)[6][64])sps->ScalingList16x16,
+        (uint8_t (*)[6][64])sps->ScalingList32x32
+   };
+   uint8_t (*scaling_list_dc_coeff[2])[6] = {
+      (uint8_t (*)[6])sps->ScalingListDCCoeff16x16,
+      (uint8_t (*)[6])sps->ScalingListDCCoeff32x32
+   };
+
+   for (size_id = 0; size_id < 4; ++size_id) {
+
+      for (matrix_id = 0; matrix_id < ((size_id == 3) ? 2 : 6); ++matrix_id) {
+         bool scaling_list_pred_mode_flag = vl_rbsp_u(rbsp, 1);
+
+         if (!scaling_list_pred_mode_flag) {
+            /* scaling_list_pred_matrix_id_delta */;
+            unsigned matrix_id_with_delta = matrix_id - vl_rbsp_ue(rbsp);
+
+            if (matrix_id != matrix_id_with_delta) {
+               memcpy((*scaling_list_data[size_id])[matrix_id],
+                      (*scaling_list_data[size_id])[matrix_id_with_delta],
+                      scaling_list_len[size_id]);
+               if (size_id > 1)
+                  (*scaling_list_dc_coeff[size_id - 2])[matrix_id] =
+                     (*scaling_list_dc_coeff[size_id - 2])[matrix_id_with_delta];
+            } else {
+               const uint8_t *d;
+
+               if (size_id == 0)
+                  memset((*scaling_list_data[0])[matrix_id], 16, 16);
+               else {
+                  if (size_id < 3)
+                     d = (matrix_id < 3) ? Default_8x8_Intra : Default_8x8_Inter;
+                  else
+                     d = (matrix_id < 1) ? Default_8x8_Intra : Default_8x8_Inter;
+                  memcpy((*scaling_list_data[size_id])[matrix_id], d,
+                         scaling_list_len[size_id]);
+               }
+               if (size_id > 1)
+                  (*scaling_list_dc_coeff[size_id - 2])[matrix_id] = 16;
+            }
+         } else {
+            int next_coef = 8;
+            int coef_num = MIN2(64, (1 << (4 + (size_id << 1))));
+
+            if (size_id > 1) {
+               /* scaling_list_dc_coef_minus8 */
+               next_coef = vl_rbsp_se(rbsp) + 8;
+               (*scaling_list_dc_coeff[size_id - 2])[matrix_id] = next_coef;
+            }
+
+            for (i = 0; i < coef_num; ++i) {
+               /* scaling_list_delta_coef */
+               next_coef = (next_coef + vl_rbsp_se(rbsp) + 256) % 256;
+               (*scaling_list_data[size_id])[matrix_id][i] = next_coef;
+            }
+         }
+      }
+   }
+
+   for (i = 0; i < 6; ++i)
+      memcpy(sps->ScalingList4x4[i], scaling_list4x4[i], 16);
+
+   return;
 }
 
 static void st_ref_pic_set(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
@@ -341,9 +434,11 @@ static void seq_parameter_set(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
    if (sps->chroma_format_idc == 3)
       sps->separate_colour_plane_flag = vl_rbsp_u(rbsp, 1);
 
-   sps->pic_width_in_luma_samples = vl_rbsp_ue(rbsp);
+   priv->codec_data.h265.pic_width_in_luma_samples =
+      sps->pic_width_in_luma_samples = vl_rbsp_ue(rbsp);
 
-   sps->pic_height_in_luma_samples = vl_rbsp_ue(rbsp);
+   priv->codec_data.h265.pic_height_in_luma_samples =
+      sps->pic_height_in_luma_samples = vl_rbsp_ue(rbsp);
 
    /* conformance_window_flag */
    if (vl_rbsp_u(rbsp, 1)) {
@@ -382,7 +477,7 @@ static void seq_parameter_set(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
    if (sps->scaling_list_enabled_flag)
       /* sps_scaling_list_data_present_flag */
       if (vl_rbsp_u(rbsp, 1))
-         scaling_list_data();
+         scaling_list_data(priv, rbsp, sps);
 
    sps->amp_enabled_flag = vl_rbsp_u(rbsp, 1);
    sps->sample_adaptive_offset_enabled_flag = vl_rbsp_u(rbsp, 1);
@@ -505,7 +600,7 @@ static void picture_parameter_set(vid_dec_PrivateType *priv,
 
    /* pps_scaling_list_data_present_flag */
    if (vl_rbsp_u(rbsp, 1))
-      scaling_list_data();
+      scaling_list_data(priv, rbsp, sps);
 
    pps->lists_modification_present_flag = vl_rbsp_u(rbsp, 1);
    pps->log2_parallel_merge_level_minus2 = vl_rbsp_ue(rbsp);
@@ -517,23 +612,34 @@ static void vid_dec_h265_BeginFrame(vid_dec_PrivateType *priv)
    if (priv->frame_started)
       return;
 
-   vid_dec_NeedTarget(priv);
-
    if (!priv->codec) {
       struct pipe_video_codec templat = {};
-      omx_base_video_PortType *port;
-
-      port = (omx_base_video_PortType *)
+      omx_base_video_PortType *port = (omx_base_video_PortType *)
          priv->ports[OMX_BASE_FILTER_INPUTPORT_INDEX];
+
       templat.profile = priv->profile;
       templat.entrypoint = PIPE_VIDEO_ENTRYPOINT_BITSTREAM;
       templat.chroma_format = PIPE_VIDEO_CHROMA_FORMAT_420;
       templat.expect_chunked_decode = true;
-      templat.width = align(port->sPortParam.format.video.nFrameWidth, 4);
-      templat.height = align(port->sPortParam.format.video.nFrameHeight, 4);
+      templat.width = priv->codec_data.h265.pic_width_in_luma_samples;
+      templat.height = priv->codec_data.h265.pic_height_in_luma_samples;
       templat.level =  priv->codec_data.h265.level_idc;
       priv->codec = priv->pipe->create_video_codec(priv->pipe, &templat);
+
+      /* disable transcode tunnel if video size is different from coded size */
+      if (priv->codec_data.h265.pic_width_in_luma_samples !=
+          port->sPortParam.format.video.nFrameWidth ||
+          priv->codec_data.h265.pic_height_in_luma_samples !=
+          port->sPortParam.format.video.nFrameHeight)
+         priv->disable_tunnel = true;
    }
+
+   vid_dec_NeedTarget(priv);
+
+   if (priv->first_buf_in_frame)
+      priv->timestamp = priv->timestamps[0];
+   priv->first_buf_in_frame = false;
+
    priv->codec->begin_frame(priv->codec, priv->target, &priv->picture.base);
    priv->frame_started = true;
 }
@@ -558,6 +664,8 @@ static struct pipe_video_buffer *vid_dec_h265_Flush(vid_dec_PrivateType *priv,
       return NULL;
 
    buf = result->buffer;
+   if (timestamp)
+      *timestamp = result->timestamp;
 
    --priv->codec_data.h265.dpb_num;
    LIST_DEL(&result->list);
@@ -572,6 +680,7 @@ static void vid_dec_h265_EndFrame(vid_dec_PrivateType *priv)
    struct pipe_video_buffer *tmp;
    struct ref_pic_set *rps;
    int i;
+   OMX_TICKS timestamp;
 
    if (!priv->frame_started)
       return;
@@ -588,6 +697,8 @@ static void vid_dec_h265_EndFrame(vid_dec_PrivateType *priv)
    rps = priv->codec_data.h265.rps;
 
    if (rps) {
+      unsigned bf = 0, af = 0;
+
       priv->picture.h265.NumDeltaPocsOfRefRpsIdx = rps->num_delta_poc;
       for (i = 0; i < rps->num_pics; ++i) {
          priv->picture.h265.PicOrderCntVal[i] =
@@ -603,11 +714,10 @@ static void vid_dec_h265_EndFrame(vid_dec_PrivateType *priv)
          if (rps->used[i]) {
             if (i < rps->num_neg_pics) {
                priv->picture.h265.NumPocStCurrBefore++;
-               priv->picture.h265.RefPicSetStCurrBefore[i] = i;
+               priv->picture.h265.RefPicSetStCurrBefore[bf++] = i;
             } else {
-               int j = i - rps->num_neg_pics;
                priv->picture.h265.NumPocStCurrAfter++;
-               priv->picture.h265.RefPicSetStCurrAfter[j] = i;
+               priv->picture.h265.RefPicSetStCurrAfter[af++] = i;
             }
          }
       }
@@ -621,7 +731,9 @@ static void vid_dec_h265_EndFrame(vid_dec_PrivateType *priv)
    if (!entry)
       return;
 
+   priv->first_buf_in_frame = true;
    entry->buffer = priv->target;
+   entry->timestamp = priv->timestamp;
    entry->poc = get_poc(priv);
 
    LIST_ADDTAIL(&entry->list, &priv->codec_data.h265.dpb_list);
@@ -632,7 +744,8 @@ static void vid_dec_h265_EndFrame(vid_dec_PrivateType *priv)
       return;
 
    tmp = priv->in_buffers[0]->pInputPortPrivate;
-   priv->in_buffers[0]->pInputPortPrivate = vid_dec_h265_Flush(priv, NULL);
+   priv->in_buffers[0]->pInputPortPrivate = vid_dec_h265_Flush(priv, &timestamp);
+   priv->in_buffers[0]->nTimeStamp = timestamp;
    priv->target = tmp;
    priv->frame_finished = priv->in_buffers[0]->pInputPortPrivate != NULL;
    if (priv->frame_finished &&
@@ -647,7 +760,7 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
    struct pipe_h265_sps *sps;
    bool first_slice_segment_in_pic_flag;
    bool dependent_slice_segment_flag = false;
-   struct ref_pic_set *rps = NULL;
+   struct ref_pic_set *rps;
    unsigned poc_lsb, poc_msb, slice_prev_poc;
    unsigned max_poc_lsb, prev_poc_lsb, prev_poc_msb;
    unsigned num_st_rps;
@@ -780,7 +893,9 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
 
       rps = (struct ref_pic_set *)
          priv->codec_data.h265.ref_pic_set_list + idx;
-   }
+   } else
+      rps = (struct ref_pic_set *)
+         priv->codec_data.h265.ref_pic_set_list;
 
    if (is_bla_picture(nal_unit_type)) {
       rps->num_neg_pics = 0;
@@ -894,4 +1009,5 @@ void vid_dec_h265_Init(vid_dec_PrivateType *priv)
    priv->Decode = vid_dec_h265_Decode;
    priv->EndFrame = vid_dec_h265_EndFrame;
    priv->Flush = vid_dec_h265_Flush;
+   priv->first_buf_in_frame = true;
 }

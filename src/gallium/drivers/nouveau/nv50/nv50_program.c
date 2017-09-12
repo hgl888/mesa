@@ -20,6 +20,8 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "pipe/p_defines.h"
+
 #include "nv50/nv50_program.h"
 #include "nv50/nv50_context.h"
 
@@ -307,6 +309,9 @@ nv50_program_create_strmout_state(const struct nv50_ir_prog_info *info,
       const unsigned r = pso->output[i].register_index;
       b = pso->output[i].output_buffer;
 
+      if (r >= info->numOutputs)
+         continue;
+
       for (c = 0; c < pso->output[i].num_components; ++c)
          so->map[base[b] + p + c] = info->out[r].slot[s + c];
    }
@@ -328,7 +333,7 @@ nv50_program_translate(struct nv50_program *prog, uint16_t chipset,
 
    info->type = prog->type;
    info->target = chipset;
-   info->bin.sourceRep = NV50_PROGRAM_IR_TGSI;
+   info->bin.sourceRep = PIPE_SHADER_IR_TGSI;
    info->bin.source = (void *)prog->pipe.tokens;
 
    info->io.auxCBSlot = 15;
@@ -377,7 +382,7 @@ nv50_program_translate(struct nv50_program *prog, uint16_t chipset,
    prog->interps = info->bin.fixupData;
    prog->max_gpr = MAX2(4, (info->bin.maxGPR >> 1) + 1);
    prog->tls_space = info->bin.tlsSpace;
-
+   prog->mul_zero_wins = info->io.mul_zero_wins;
    prog->vp.need_vertex_id = info->io.vertexId < PIPE_MAX_SHADER_INPUTS;
 
    prog->vp.clip_enable = (1 << info->io.clipDistances) - 1;

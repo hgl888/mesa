@@ -24,7 +24,6 @@
 #include <assert.h>
 
 #include "anv_private.h"
-#include "genX_multisample.h"
 
 /* These are defined in anv_private.h and blorp_genX_exec.h */
 #undef __gen_address_type
@@ -32,6 +31,7 @@
 #undef __gen_combine_address
 
 #include "common/gen_l3_config.h"
+#include "common/gen_sample_positions.h"
 #include "blorp/blorp_genX_exec.h"
 
 static void *
@@ -57,13 +57,15 @@ blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
                     struct blorp_address address, uint32_t delta)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
-   anv_reloc_list_add(&cmd_buffer->surface_relocs, &cmd_buffer->pool->alloc,
-                      ss_offset, address.buffer, address.offset + delta);
+   VkResult result =
+      anv_reloc_list_add(&cmd_buffer->surface_relocs, &cmd_buffer->pool->alloc,
+                         ss_offset, address.buffer, address.offset + delta);
+   if (result != VK_SUCCESS)
+      anv_batch_set_error(&cmd_buffer->batch, result);
 }
 
 static void *
 blorp_alloc_dynamic_state(struct blorp_batch *batch,
-                          enum aub_state_struct_type type,
                           uint32_t size,
                           uint32_t alignment,
                           uint32_t *offset)
@@ -86,23 +88,13 @@ blorp_alloc_binding_table(struct blorp_batch *batch, unsigned num_entries,
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
 
    uint32_t state_offset;
-   struct anv_state bt_state =
-      anv_cmd_buffer_alloc_binding_table(cmd_buffer, num_entries,
-                                         &state_offset);
-   if (bt_state.map == NULL) {
-      /* We ran out of space.  Grab a new binding table block. */
-      VkResult result = anv_cmd_buffer_new_binding_table_block(cmd_buffer);
-      assert(result == VK_SUCCESS);
+   struct anv_state bt_state;
 
-      /* Re-emit state base addresses so we get the new surface state base
-       * address before we start emitting binding tables etc.
-       */
-      anv_cmd_buffer_emit_state_base_address(cmd_buffer);
-
-      bt_state = anv_cmd_buffer_alloc_binding_table(cmd_buffer, num_entries,
-                                                    &state_offset);
-      assert(bt_state.map != NULL);
-   }
+   VkResult result =
+      anv_cmd_buffer_alloc_blorp_binding_table(cmd_buffer, num_entries,
+                                               &state_offset, &bt_state);
+   if (result != VK_SUCCESS)
+      return;
 
    uint32_t *bt_map = bt_state.map;
    *bt_offset = bt_state.offset;
@@ -114,6 +106,8 @@ blorp_alloc_binding_table(struct blorp_batch *batch, unsigned num_entries,
       surface_offsets[i] = surface_state.offset;
       surface_maps[i] = surface_state.map;
    }
+
+   anv_state_flush(cmd_buffer->device, bt_state);
 }
 
 static void *
@@ -121,69 +115,67 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
                           struct blorp_address *addr)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+
+   /* From the Skylake PRM, 3DSTATE_VERTEX_BUFFERS:
+    *
+    *    "The VF cache needs to be invalidated before binding and then using
+    *    Vertex Buffers that overlap with any previously bound Vertex Buffer
+    *    (at a 64B granularity) since the last invalidation.  A VF cache
+    *    invalidate is performed by setting the "VF Cache Invalidation Enable"
+    *    bit in PIPE_CONTROL."
+    *
+    * This restriction first appears in the Skylake PRM but the internal docs
+    * also list it as being an issue on Broadwell.  In order to avoid this
+    * problem, we align all vertex buffer allocations to 64 bytes.
+    */
    struct anv_state vb_state =
-      anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, size, 16);
+      anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, size, 64);
 
    *addr = (struct blorp_address) {
-      .buffer = &cmd_buffer->device->dynamic_state_block_pool.bo,
+      .buffer = &cmd_buffer->device->dynamic_state_pool.block_pool.bo,
       .offset = vb_state.offset,
    };
 
    return vb_state.map;
 }
 
+#if GEN_GEN >= 8
+static struct blorp_address
+blorp_get_workaround_page(struct blorp_batch *batch)
+{
+   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+
+   return (struct blorp_address) {
+      .buffer = &cmd_buffer->device->workaround_bo,
+   };
+}
+#endif
+
 static void
-blorp_emit_urb_config(struct blorp_batch *batch, unsigned vs_entry_size)
+blorp_flush_range(struct blorp_batch *batch, void *start, size_t size)
+{
+   struct anv_device *device = batch->blorp->driver_ctx;
+   if (!device->info.has_llc)
+      gen_flush_range(start, size);
+}
+
+static void
+blorp_emit_urb_config(struct blorp_batch *batch,
+                      unsigned vs_entry_size, unsigned sf_entry_size)
 {
    struct anv_device *device = batch->blorp->driver_ctx;
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
 
+   assert(sf_entry_size == 0);
+
+   const unsigned entry_size[4] = { vs_entry_size, 1, 1, 1 };
+
    genX(emit_urb_setup)(device, &cmd_buffer->batch,
+                        cmd_buffer->state.current_l3_config,
                         VK_SHADER_STAGE_VERTEX_BIT |
                         VK_SHADER_STAGE_FRAGMENT_BIT,
-                        vs_entry_size, 0,
-                        cmd_buffer->state.current_l3_config);
+                        entry_size);
 }
-
-static void
-blorp_emit_3dstate_multisample(struct blorp_batch *batch, unsigned samples)
-{
-   blorp_emit(batch, GENX(3DSTATE_MULTISAMPLE), ms) {
-      ms.NumberofMultisamples       = __builtin_ffs(samples) - 1;
-
-#if GEN_GEN >= 8
-      /* The PRM says that this bit is valid only for DX9:
-       *
-       *    SW can choose to set this bit only for DX9 API. DX10/OGL API's
-       *    should not have any effect by setting or not setting this bit.
-       */
-      ms.PixelPositionOffsetEnable  = false;
-      ms.PixelLocation              = CENTER;
-#else
-      ms.PixelLocation              = PIXLOC_CENTER;
-
-      switch (samples) {
-      case 1:
-         SAMPLE_POS_1X(ms.Sample);
-         break;
-      case 2:
-         SAMPLE_POS_2X(ms.Sample);
-         break;
-      case 4:
-         SAMPLE_POS_4X(ms.Sample);
-         break;
-      case 8:
-         SAMPLE_POS_8X(ms.Sample);
-         break;
-      default:
-         break;
-      }
-#endif
-   }
-}
-
-void genX(blorp_exec)(struct blorp_batch *batch,
-                      const struct blorp_params *params);
 
 void
 genX(blorp_exec)(struct blorp_batch *batch,
@@ -199,61 +191,21 @@ genX(blorp_exec)(struct blorp_batch *batch,
 
    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
-   if (cmd_buffer->state.current_pipeline != _3D) {
-#if GEN_GEN <= 7
-      /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
-       * PIPELINE_SELECT [DevBWR+]":
-       *
-       *   Project: DEVSNB+
-       *
-       *   Software must ensure all the write caches are flushed through a
-       *   stalling PIPE_CONTROL command followed by another PIPE_CONTROL
-       *   command to invalidate read only caches prior to programming
-       *   MI_PIPELINE_SELECT command to change the Pipeline Select Mode.
-       */
-      blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
-         pc.RenderTargetCacheFlushEnable  = true;
-         pc.DepthCacheFlushEnable         = true;
-         pc.DCFlushEnable                 = true;
-         pc.PostSyncOperation             = NoWrite;
-         pc.CommandStreamerStallEnable    = true;
-      }
+   genX(flush_pipeline_select_3d)(cmd_buffer);
 
-      blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
-         pc.TextureCacheInvalidationEnable   = true;
-         pc.ConstantCacheInvalidationEnable  = true;
-         pc.StateCacheInvalidationEnable     = true;
-         pc.InstructionCacheInvalidateEnable = true;
-         pc.PostSyncOperation                = NoWrite;
-      }
-#endif
+   genX(cmd_buffer_emit_gen7_depth_flush)(cmd_buffer);
 
-      blorp_emit(batch, GENX(PIPELINE_SELECT), ps) {
-#if GEN_GEN >= 9
-         ps.MaskBits = 3;
-#endif
-         ps.PipelineSelection = _3D;
-      }
+   /* BLORP doesn't do anything fancy with depth such as discards, so we want
+    * the PMA fix off.  Also, off is always the safe option.
+    */
+   genX(cmd_buffer_enable_pma_fix)(cmd_buffer, false);
 
-      cmd_buffer->state.current_pipeline = _3D;
+   /* Disable VF statistics */
+   blorp_emit(batch, GENX(3DSTATE_VF_STATISTICS), vf) {
+      vf.StatisticsEnable = false;
    }
 
    blorp_exec(batch, params);
-
-   /* BLORP sets DRAWING_RECTANGLE but we always want it set to the maximum.
-    * Since we set it once at driver init and never again, we have to set it
-    * back after invoking blorp.
-    *
-    * TODO: BLORP should assume a max drawing rectangle
-    */
-   blorp_emit(batch, GENX(3DSTATE_DRAWING_RECTANGLE), rect) {
-      rect.ClippedDrawingRectangleYMin = 0;
-      rect.ClippedDrawingRectangleXMin = 0;
-      rect.ClippedDrawingRectangleYMax = UINT16_MAX;
-      rect.ClippedDrawingRectangleXMax = UINT16_MAX;
-      rect.DrawingRectangleOriginY = 0;
-      rect.DrawingRectangleOriginX = 0;
-   }
 
    cmd_buffer->state.vb_dirty = ~0;
    cmd_buffer->state.dirty = ~0;

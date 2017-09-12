@@ -35,20 +35,69 @@
 
 #include "amdgpu_winsys.h"
 
+#include "pipebuffer/pb_slab.h"
+
+struct amdgpu_sparse_backing_chunk;
+
+/*
+ * Sub-allocation information for a real buffer used as backing memory of a
+ * sparse buffer.
+ */
+struct amdgpu_sparse_backing {
+   struct list_head list;
+
+   struct amdgpu_winsys_bo *bo;
+
+   /* Sorted list of free chunks. */
+   struct amdgpu_sparse_backing_chunk *chunks;
+   uint32_t max_chunks;
+   uint32_t num_chunks;
+};
+
+struct amdgpu_sparse_commitment {
+   struct amdgpu_sparse_backing *backing;
+   uint32_t page;
+};
+
 struct amdgpu_winsys_bo {
    struct pb_buffer base;
-   struct pb_cache_entry cache_entry;
+   union {
+      struct {
+         struct pb_cache_entry cache_entry;
+
+         amdgpu_va_handle va_handle;
+         int map_count;
+         bool use_reusable_pool;
+
+         struct list_head global_list_item;
+      } real;
+      struct {
+         struct pb_slab_entry entry;
+         struct amdgpu_winsys_bo *real;
+      } slab;
+      struct {
+         mtx_t commit_lock;
+         amdgpu_va_handle va_handle;
+         enum radeon_bo_flag flags;
+
+         uint32_t num_va_pages;
+         uint32_t num_backing_pages;
+
+         struct list_head backing;
+
+         /* Commitment information for each page of the virtual memory area. */
+         struct amdgpu_sparse_commitment *commitments;
+      } sparse;
+   } u;
 
    struct amdgpu_winsys *ws;
    void *user_ptr; /* from buffer_from_ptr */
 
-   amdgpu_bo_handle bo;
-   int map_count;
+   amdgpu_bo_handle bo; /* NULL for slab entries and sparse buffers */
+   bool sparse;
    uint32_t unique_id;
-   amdgpu_va_handle va_handle;
    uint64_t va;
    enum radeon_bo_domain initial_domain;
-   bool use_reusable_pool;
 
    /* how many command streams is this bo referenced in? */
    int num_cs_references;
@@ -62,20 +111,40 @@ struct amdgpu_winsys_bo {
     */
    volatile int is_shared; /* bool (int for atomicity) */
 
-   /* Fence for buffer synchronization. */
-   struct pipe_fence_handle *fence;
+   /* Fences for buffer synchronization. */
+   unsigned num_fences;
+   unsigned max_fences;
+   struct pipe_fence_handle **fences;
 
-   struct list_head global_list_item;
+   bool is_local;
+};
+
+struct amdgpu_slab {
+   struct pb_slab base;
+   struct amdgpu_winsys_bo *buffer;
+   struct amdgpu_winsys_bo *entries;
 };
 
 bool amdgpu_bo_can_reclaim(struct pb_buffer *_buf);
 void amdgpu_bo_destroy(struct pb_buffer *_buf);
 void amdgpu_bo_init_functions(struct amdgpu_winsys *ws);
 
+bool amdgpu_bo_can_reclaim_slab(void *priv, struct pb_slab_entry *entry);
+struct pb_slab *amdgpu_bo_slab_alloc(void *priv, unsigned heap,
+                                     unsigned entry_size,
+                                     unsigned group_index);
+void amdgpu_bo_slab_free(void *priv, struct pb_slab *slab);
+
 static inline
 struct amdgpu_winsys_bo *amdgpu_winsys_bo(struct pb_buffer *bo)
 {
    return (struct amdgpu_winsys_bo *)bo;
+}
+
+static inline
+struct amdgpu_slab *amdgpu_slab(struct pb_slab *slab)
+{
+   return (struct amdgpu_slab *)slab;
 }
 
 static inline

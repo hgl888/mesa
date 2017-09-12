@@ -46,7 +46,7 @@ struct dpb_list {
    struct list_head list;
    struct pipe_video_buffer *buffer;
    OMX_TICKS timestamp;
-   unsigned poc;
+   int poc;
 };
 
 static const uint8_t Default_4x4_Intra[16] = {
@@ -105,13 +105,6 @@ static void vid_dec_h264_BeginFrame(vid_dec_PrivateType *priv)
    if (priv->frame_started)
       return;
 
-   vid_dec_NeedTarget(priv);
-   if (priv->first_buf_in_frame)
-      priv->timestamp = priv->timestamps[0];
-   priv->first_buf_in_frame = false;
-
-   priv->picture.h264.num_ref_frames = priv->picture.h264.pps->sps->max_num_ref_frames;
-
    if (!priv->codec) {
       struct pipe_video_codec templat = {};
       omx_base_video_PortType *port;
@@ -128,6 +121,15 @@ static void vid_dec_h264_BeginFrame(vid_dec_PrivateType *priv)
 
       priv->codec = priv->pipe->create_video_codec(priv->pipe, &templat);
    }
+
+   vid_dec_NeedTarget(priv);
+
+   if (priv->first_buf_in_frame)
+      priv->timestamp = priv->timestamps[0];
+   priv->first_buf_in_frame = false;
+
+   priv->picture.h264.num_ref_frames = priv->picture.h264.pps->sps->max_num_ref_frames;
+
    priv->picture.h264.slice_count = 0;
    priv->codec->begin_frame(priv->codec, priv->target, &priv->picture.base);
    priv->frame_started = true;
@@ -735,8 +737,8 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
    if (sps->pic_order_cnt_type == 0) {
       unsigned log2_max_pic_order_cnt_lsb = sps->log2_max_pic_order_cnt_lsb_minus4 + 4;
       unsigned max_pic_order_cnt_lsb = 1 << log2_max_pic_order_cnt_lsb;
-      unsigned pic_order_cnt_lsb = vl_rbsp_u(rbsp, log2_max_pic_order_cnt_lsb);
-      unsigned pic_order_cnt_msb;
+      int pic_order_cnt_lsb = vl_rbsp_u(rbsp, log2_max_pic_order_cnt_lsb);
+      int pic_order_cnt_msb;
 
       if (pic_order_cnt_lsb != priv->codec_data.h264.pic_order_cnt_lsb)
          vid_dec_h264_EndFrame(priv);

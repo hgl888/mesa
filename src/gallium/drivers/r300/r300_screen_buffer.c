@@ -77,7 +77,7 @@ r300_buffer_transfer_map( struct pipe_context *context,
     struct pipe_transfer *transfer;
     uint8_t *map;
 
-    transfer = slab_alloc_st(&r300->pool_transfers);
+    transfer = slab_alloc(&r300->pool_transfers);
     transfer->resource = resource;
     transfer->level = level;
     transfer->usage = usage;
@@ -111,7 +111,7 @@ r300_buffer_transfer_map( struct pipe_context *context,
 
                 /* We changed the buffer, now we need to bind it where the old one was bound. */
                 for (i = 0; i < r300->nr_vertex_buffers; i++) {
-                    if (r300->vertex_buffer[i].buffer == &rbuf->b.b) {
+                    if (r300->vertex_buffer[i].buffer.resource == &rbuf->b.b) {
                         r300->vertex_arrays_dirty = TRUE;
                         break;
                     }
@@ -129,7 +129,7 @@ r300_buffer_transfer_map( struct pipe_context *context,
     map = rws->buffer_map(rbuf->buf, r300->cs, usage);
 
     if (!map) {
-        slab_free_st(&r300->pool_transfers, transfer);
+        slab_free(&r300->pool_transfers, transfer);
         return NULL;
     }
 
@@ -142,7 +142,7 @@ static void r300_buffer_transfer_unmap( struct pipe_context *pipe,
 {
     struct r300_context *r300 = r300_context(pipe);
 
-    slab_free_st(&r300->pool_transfers, transfer);
+    slab_free(&r300->pool_transfers, transfer);
 }
 
 static const struct u_resource_vtbl r300_buffer_vtbl =

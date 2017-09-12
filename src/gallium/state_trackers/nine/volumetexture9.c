@@ -139,7 +139,7 @@ NineVolumeTexture9_dtor( struct NineVolumeTexture9 *This )
     DBG("This=%p\n", This);
 
     if (This->volumes) {
-        for (l = 0; l < This->base.base.info.last_level; ++l)
+        for (l = 0; l <= This->base.base.info.last_level; ++l)
             NineUnknown_Destroy(&This->volumes[l]->base);
         FREE(This->volumes);
     }
@@ -222,9 +222,13 @@ NineVolumeTexture9_AddDirtyBox( struct NineVolumeTexture9 *This,
         This->dirty_box.height = This->base.base.info.height0;
         This->dirty_box.depth = This->base.base.info.depth0;
     } else {
-        struct pipe_box box;
-        d3dbox_to_pipe_box(&box, pDirtyBox);
-        u_box_union_3d(&This->dirty_box, &This->dirty_box, &box);
+        if (This->dirty_box.width == 0) {
+            d3dbox_to_pipe_box(&This->dirty_box, pDirtyBox);
+        } else {
+            struct pipe_box box;
+            d3dbox_to_pipe_box(&box, pDirtyBox);
+            u_box_union_3d(&This->dirty_box, &This->dirty_box, &box);
+        }
         This->dirty_box.x = MAX2(This->dirty_box.x, 0);
         This->dirty_box.y = MAX2(This->dirty_box.y, 0);
         This->dirty_box.z = MAX2(This->dirty_box.z, 0);
@@ -243,9 +247,9 @@ IDirect3DVolumeTexture9Vtbl NineVolumeTexture9_vtable = {
     (void *)NineUnknown_AddRef,
     (void *)NineUnknown_Release,
     (void *)NineUnknown_GetDevice, /* actually part of Resource9 iface */
-    (void *)NineResource9_SetPrivateData,
-    (void *)NineResource9_GetPrivateData,
-    (void *)NineResource9_FreePrivateData,
+    (void *)NineUnknown_SetPrivateData,
+    (void *)NineUnknown_GetPrivateData,
+    (void *)NineUnknown_FreePrivateData,
     (void *)NineResource9_SetPriority,
     (void *)NineResource9_GetPriority,
     (void *)NineBaseTexture9_PreLoad,

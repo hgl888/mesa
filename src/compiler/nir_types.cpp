@@ -28,32 +28,10 @@
 #include "nir_types.h"
 #include "compiler/glsl/ir.h"
 
-void
-glsl_print_type(const glsl_type *type, FILE *fp)
+const char *
+glsl_get_type_name(const glsl_type *type)
 {
-   if (type->base_type == GLSL_TYPE_ARRAY) {
-      glsl_print_type(type->fields.array, fp);
-      fprintf(fp, "[%u]", type->length);
-   } else if ((type->base_type == GLSL_TYPE_STRUCT)
-              && !is_gl_identifier(type->name)) {
-      fprintf(fp, "%s@%p", type->name, (void *) type);
-   } else {
-      fprintf(fp, "%s", type->name);
-   }
-}
-
-void
-glsl_print_struct(const glsl_type *type, FILE *fp)
-{
-   assert(type->base_type == GLSL_TYPE_STRUCT);
-
-   fprintf(fp, "struct {\n");
-   for (unsigned i = 0; i < type->length; i++) {
-      fprintf(fp, "\t");
-      glsl_print_type(type->fields.structure[i].type, fp);
-      fprintf(fp, " %s;\n", type->fields.structure[i].name);
-   }
-   fprintf(fp, "}\n");
+   return type->name;
 }
 
 const glsl_type *
@@ -68,6 +46,13 @@ const glsl_type *
 glsl_without_array(const glsl_type *type)
 {
    return type->without_array();
+}
+
+const glsl_type *
+glsl_get_array_instance(const glsl_type *type,
+                        unsigned array_size)
+{
+   return glsl_type::get_array_instance(type, array_size);
 }
 
 const glsl_type *
@@ -207,6 +192,12 @@ glsl_type_is_array(const struct glsl_type *type)
 }
 
 bool
+glsl_type_is_array_of_arrays(const struct glsl_type *type)
+{
+   return type->is_array_of_arrays();
+}
+
+bool
 glsl_type_is_struct(const struct glsl_type *type)
 {
    return type->is_record() || type->is_interface();
@@ -236,6 +227,24 @@ glsl_sampler_type_is_array(const struct glsl_type *type)
 {
    assert(glsl_type_is_sampler(type) || glsl_type_is_image(type));
    return type->sampler_array;
+}
+
+bool
+glsl_type_is_dual_slot(const struct glsl_type *type)
+{
+   return type->is_dual_slot();
+}
+
+bool
+glsl_type_is_numeric(const struct glsl_type *type)
+{
+   return type->is_numeric();
+}
+
+bool
+glsl_type_is_boolean(const struct glsl_type *type)
+{
+   return type->is_boolean();
 }
 
 const glsl_type *
@@ -287,6 +296,18 @@ glsl_uint_type(void)
 }
 
 const glsl_type *
+glsl_int64_t_type(void)
+{
+   return glsl_type::int64_t_type;
+}
+
+const glsl_type *
+glsl_uint64_t_type(void)
+{
+   return glsl_type::uint64_t_type;
+}
+
+const glsl_type *
 glsl_bool_type(void)
 {
    return glsl_type::bool_type;
@@ -323,6 +344,17 @@ glsl_struct_type(const glsl_struct_field *fields,
                  unsigned num_fields, const char *name)
 {
    return glsl_type::get_record_instance(fields, num_fields, name);
+}
+
+const glsl_type *
+glsl_interface_type(const glsl_struct_field *fields,
+                    unsigned num_fields,
+                    enum glsl_interface_packing packing,
+                    bool row_major,
+                    const char *block_name)
+{
+   return glsl_type::get_interface_instance(fields, num_fields, packing,
+                                            row_major, block_name);
 }
 
 const struct glsl_type *

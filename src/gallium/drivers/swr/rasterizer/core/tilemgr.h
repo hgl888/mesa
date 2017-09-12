@@ -147,9 +147,11 @@ private:
     // Any tile that has work queued to it is a dirty tile.
     std::vector<MacroTileQueue*> mDirtyTiles;
 
-    OSALIGNLINE(LONG) mWorkItemsProduced { 0 };
-    OSALIGNLINE(volatile LONG) mWorkItemsConsumed { 0 };
+    OSALIGNLINE(long) mWorkItemsProduced { 0 };
+    OSALIGNLINE(volatile long) mWorkItemsConsumed { 0 };
 };
+
+typedef void(*PFN_DISPATCH)(DRAW_CONTEXT* pDC, uint32_t workerId, uint32_t threadGroupId, void*& pSpillFillBuffer, void*& pScratchSpace);
 
 //////////////////////////////////////////////////////////////////////////
 /// DispatchQueue - work queue for dispatch
@@ -161,7 +163,7 @@ public:
 
     //////////////////////////////////////////////////////////////////////////
     /// @brief Setup the producer consumer counts.
-    void initialize(uint32_t totalTasks, void* pTaskData)
+    void initialize(uint32_t totalTasks, void* pTaskData, PFN_DISPATCH pfnDispatch)
     {
         // The available and outstanding counts start with total tasks.
         // At the start there are N tasks available and outstanding.
@@ -173,6 +175,7 @@ public:
         mTasksOutstanding = totalTasks;
 
         mpTaskData = pTaskData;
+        mPfnDispatch = pfnDispatch;
     }
 
     //////////////////////////////////////////////////////////////////////////
@@ -188,7 +191,7 @@ public:
     //         Otherwise, there is no more work to do.
     bool getWork(uint32_t& groupId)
     {
-        LONG result = InterlockedDecrement(&mTasksAvailable);
+        long result = InterlockedDecrement(&mTasksAvailable);
 
         if (result >= 0)
         {
@@ -205,7 +208,7 @@ public:
     ///        the last worker to complete this dispatch.
     bool finishedWork()
     {
-        LONG result = InterlockedDecrement(&mTasksOutstanding);
+        long result = InterlockedDecrement(&mTasksOutstanding);
         SWR_ASSERT(result >= 0, "Should never oversubscribe work");
 
         return (result == 0) ? true : false;
@@ -226,10 +229,19 @@ public:
         return mpTaskData;
     }
 
-    void* mpTaskData{ nullptr };        // The API thread will set this up and the callback task function will interpet this.
+    //////////////////////////////////////////////////////////////////////////
+    /// @brief Dispatches a unit of work
+    void dispatch(DRAW_CONTEXT* pDC, uint32_t workerId, uint32_t threadGroupId, void*& pSpillFillBuffer, void*& pScratchSpace)
+    {
+        SWR_ASSERT(mPfnDispatch != nullptr);
+        mPfnDispatch(pDC, workerId, threadGroupId, pSpillFillBuffer, pScratchSpace);
+    }
 
-    OSALIGNLINE(volatile LONG) mTasksAvailable{ 0 };
-    OSALIGNLINE(volatile LONG) mTasksOutstanding{ 0 };
+    void* mpTaskData{ nullptr };        // The API thread will set this up and the callback task function will interpet this.
+    PFN_DISPATCH mPfnDispatch{ nullptr };      // Function to call per dispatch
+
+    OSALIGNLINE(volatile long) mTasksAvailable{ 0 };
+    OSALIGNLINE(volatile long) mTasksOutstanding{ 0 };
 };
 
 
@@ -291,7 +303,7 @@ public:
         }
     }
 
-    void InitializeHotTiles(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC, uint32_t macroID);
+    void InitializeHotTiles(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC, uint32_t workerId, uint32_t macroID);
 
     HOTTILE *GetHotTile(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC, uint32_t macroID, SWR_RENDERTARGET_ATTACHMENT attachment, bool create, uint32_t numSamples = 1,
         uint32_t renderTargetArrayIndex = 0);

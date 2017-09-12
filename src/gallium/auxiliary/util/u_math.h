@@ -429,6 +429,18 @@ util_logbase2(unsigned n)
 #endif
 }
 
+/**
+ * Returns the ceiling of log n base 2, and 0 when n == 0. Equivalently,
+ * returns the smallest x such that n <= 2**x.
+ */
+static inline unsigned
+util_logbase2_ceil(unsigned n)
+{
+   if (n <= 1)
+      return 0;
+
+   return 1 + util_logbase2(n - 1);
+}
 
 /**
  * Returns the smallest power of two >= x
@@ -593,8 +605,9 @@ util_memcpy_cpu_to_le32(void * restrict dest, const void * restrict src, size_t 
 /**
  * Clamp X to [MIN, MAX].
  * This is a macro to allow float, int, uint, etc. types.
+ * We arbitrarily turn NaN into MIN.
  */
-#define CLAMP( X, MIN, MAX )  ( (X)<(MIN) ? (MIN) : ((X)>(MAX) ? (MAX) : (X)) )
+#define CLAMP( X, MIN, MAX )  ( (X)>(MIN) ? ((X)>(MAX) ? (MAX) : (X)) : (MIN) )
 
 #define MIN2( A, B )   ( (A)<(B) ? (A) : (B) )
 #define MAX2( A, B )   ( (A)>(B) ? (A) : (B) )

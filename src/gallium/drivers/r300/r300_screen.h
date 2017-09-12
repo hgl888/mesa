@@ -44,9 +44,11 @@ struct r300_screen {
     /** Combination of DBG_xxx flags */
     unsigned debug;
 
+    struct slab_parent_pool pool_transfers;
+
     /* The MSAA texture with CMASK access; */
     struct pipe_resource *cmask_resource;
-    pipe_mutex cmask_mutex;
+    mtx_t cmask_mutex;
 };
 
 
