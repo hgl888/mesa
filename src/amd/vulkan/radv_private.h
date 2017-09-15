@@ -744,6 +744,13 @@ extern const struct radv_dynamic_state default_dynamic_state;
 void radv_dynamic_state_copy(struct radv_dynamic_state *dest,
 			     const struct radv_dynamic_state *src,
 			     uint32_t copy_mask);
+
+const char *
+radv_get_debug_option_name(int id);
+
+const char *
+radv_get_perftest_option_name(int id);
+
 /**
  * Attachment state when recording a renderpass instance.
  *
@@ -1314,8 +1321,7 @@ struct radv_buffer_view {
 };
 void radv_buffer_view_init(struct radv_buffer_view *view,
 			   struct radv_device *device,
-			   const VkBufferViewCreateInfo* pCreateInfo,
-			   struct radv_cmd_buffer *cmd_buffer);
+			   const VkBufferViewCreateInfo* pCreateInfo);
 
 static inline struct VkExtent3D
 radv_sanitize_image_extent(const VkImageType imageType,
